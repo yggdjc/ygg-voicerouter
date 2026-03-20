@@ -67,6 +67,9 @@ fn is_cjk_context(c: char) -> bool {
 /// assert_eq!(space_cjk_ascii_boundary("Hello世界"), "Hello 世界");
 /// assert_eq!(space_cjk_ascii_boundary("纯中文"), "纯中文");
 /// assert_eq!(space_cjk_ascii_boundary("pure ascii"), "pure ascii");
+/// // Fullwidth punct already provides separation — no extra space.
+/// assert_eq!(space_cjk_ascii_boundary("话，this"), "话，this");
+/// assert_eq!(space_cjk_ascii_boundary("end。Next"), "end。Next");
 /// ```
 #[must_use]
 pub fn space_cjk_ascii_boundary(text: &str) -> String {
@@ -76,9 +79,14 @@ pub fn space_cjk_ascii_boundary(text: &str) -> String {
     for (i, &c) in chars.iter().enumerate() {
         if i > 0 {
             let prev = chars[i - 1];
-            let need_space =
-                (is_cjk_context(prev) && c.is_ascii_alphanumeric())
-                || (prev.is_ascii_alphanumeric() && is_cjk_context(c));
+            // Don't insert space next to fullwidth punctuation — it already
+            // provides visual separation (e.g. "话，this" stays as-is).
+            let prev_is_fw_punct = to_halfwidth(prev).is_some();
+            let curr_is_fw_punct = to_halfwidth(c).is_some();
+            let need_space = !prev_is_fw_punct
+                && !curr_is_fw_punct
+                && ((is_cjk_context(prev) && c.is_ascii_alphanumeric())
+                    || (prev.is_ascii_alphanumeric() && is_cjk_context(c)));
             if need_space {
                 output.push(' ');
             }
