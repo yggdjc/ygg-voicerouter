@@ -76,14 +76,13 @@ enum HotkeyState {
 
 /// Pure state machine — no I/O, injectable timestamps for testing.
 ///
-/// Feed `(KeyAction, Instant)` pairs via [`Self::process`]; drain any buffered
-/// second event via [`Self::take_pending`] immediately after.
+/// Feed `(KeyAction, Instant)` pairs via [`Self::process`].  In Auto mode,
+/// call [`Self::tick`] periodically so that a held key transitions to PTT
+/// (StartRecording) as soon as `hold_delay` elapses.
 pub struct HotkeyStateMachine {
     mode: HotkeyMode,
     hold_delay: Duration,
     state: HotkeyState,
-    /// At most one event can be buffered (auto long-press emits Start + Stop).
-    pending: Option<HotkeyEvent>,
 }
 
 impl HotkeyStateMachine {
@@ -105,15 +104,10 @@ impl HotkeyStateMachine {
             mode,
             hold_delay: Duration::from_secs_f64(hold_delay_secs),
             state: HotkeyState::Idle,
-            pending: None,
         }
     }
 
     /// Feed a key action at the given timestamp; returns a recording event if one fires.
-    ///
-    /// In Auto long-press mode a single key-up event may produce two events
-    /// (`StartRecording` followed by `StopRecording`). Call [`Self::take_pending`]
-    /// after each `process` call to drain the second event.
     pub fn process(&mut self, action: KeyAction, now: Instant) -> Option<HotkeyEvent> {
         match self.mode {
             HotkeyMode::Ptt => self.process_ptt(action),
@@ -122,12 +116,25 @@ impl HotkeyStateMachine {
         }
     }
 
-    /// Drain a pending event queued during a transition that produces two events.
+    /// Advance the state machine's time-based transitions.
     ///
-    /// Call this immediately after [`Self::process`] returns `Some(…)` to check
-    /// whether a second event is buffered.
-    pub fn take_pending(&mut self) -> Option<HotkeyEvent> {
-        self.pending.take()
+    /// In Auto mode: if the key has been held for at least `hold_delay`,
+    /// transition to `WaitingRelease` and emit `StartRecording` so that
+    /// recording begins while the key is still physically held.
+    ///
+    /// Call this on every poll iteration before processing device events.
+    /// Returns `None` in all other modes or states.
+    pub fn tick(&mut self, now: Instant) -> Option<HotkeyEvent> {
+        if self.mode != HotkeyMode::Auto {
+            return None;
+        }
+        if let HotkeyState::KeyDown { since } = self.state {
+            if now.duration_since(since) >= self.hold_delay {
+                self.state = HotkeyState::WaitingRelease;
+                return Some(HotkeyEvent::StartRecording);
+            }
+        }
+        None
     }
 
     // -----------------------------------------------------------------------
@@ -174,19 +181,18 @@ impl HotkeyStateMachine {
                 None
             }
 
-            // Key released while timing — short vs long press decision.
-            (HotkeyState::KeyDown { since }, KeyAction::Up) => {
-                let held = now.duration_since(*since);
-                if held < self.hold_delay {
-                    // Short press: toggle — begin recording, wait for second press.
-                    self.state = HotkeyState::Recording;
-                    Some(HotkeyEvent::StartRecording)
-                } else {
-                    // Long press: PTT — start and immediately stop in one gesture.
-                    self.state = HotkeyState::Idle;
-                    self.pending = Some(HotkeyEvent::StopRecording);
-                    Some(HotkeyEvent::StartRecording)
-                }
+            // Key released while timing — short press (toggle): start recording.
+            // Long-press transitions are handled by tick(); if we reach here the
+            // hold_delay has not elapsed yet.
+            (HotkeyState::KeyDown { .. }, KeyAction::Up) => {
+                self.state = HotkeyState::Recording;
+                Some(HotkeyEvent::StartRecording)
+            }
+
+            // Long-press PTT release: tick() moved us to WaitingRelease; now stop.
+            (HotkeyState::WaitingRelease, KeyAction::Up) => {
+                self.state = HotkeyState::Idle;
+                Some(HotkeyEvent::StopRecording)
             }
 
             // Toggle stop: second press while already recording.

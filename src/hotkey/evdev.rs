@@ -116,12 +116,12 @@ impl HotkeyMonitor {
     /// Returns immediately (non-blocking).  Call repeatedly from a loop.
     /// Returns `None` when no actionable event is available.
     pub fn poll(&mut self) -> Option<HotkeyEvent> {
-        // Drain any event buffered from a previous call (auto long-press).
-        if let Some(ev) = self.state_machine.take_pending() {
+        let now = Instant::now();
+
+        // Advance time-based transitions (Auto long-press → StartRecording).
+        if let Some(ev) = self.state_machine.tick(now) {
             return Some(ev);
         }
-
-        let now = Instant::now();
 
         for device in &mut self.devices {
             match device.fetch_events() {

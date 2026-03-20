@@ -124,8 +124,8 @@ fn auto_short_press_toggles_start() {
     sm.process(KeyAction::Down, at(now, 0));
     let result = sm.process(KeyAction::Up, at(now, 100));
     assert_eq!(result, Some(HotkeyEvent::StartRecording));
-    // No pending event for a short press.
-    assert_eq!(sm.take_pending(), None);
+    // No tick-triggered event for a short press.
+    assert_eq!(sm.tick(at(now, 400)), None);
 }
 
 #[test]
@@ -148,34 +148,35 @@ fn auto_short_press_second_stops() {
 fn auto_long_press_is_ptt() {
     let mut sm = auto_sm();
     let now = Instant::now();
-    // Hold for 400 ms (>= 300 ms hold_delay).
-    sm.process(KeyAction::Down, at(now, 0));
-    let result = sm.process(KeyAction::Up, at(now, 400));
-    // Start and Stop both emitted for the long-press gesture.
-    assert_eq!(result, Some(HotkeyEvent::StartRecording));
-    assert_eq!(sm.take_pending(), Some(HotkeyEvent::StopRecording));
+    // Key down at t=0; hold_delay is 300 ms.
+    assert_eq!(sm.process(KeyAction::Down, at(now, 0)), None);
+    // Tick at 400 ms: hold_delay elapsed → StartRecording fires, state → WaitingRelease.
+    assert_eq!(sm.tick(at(now, 400)), Some(HotkeyEvent::StartRecording));
+    // Key-up: StopRecording fires.
+    assert_eq!(sm.process(KeyAction::Up, at(now, 400)), Some(HotkeyEvent::StopRecording));
 }
 
 #[test]
 fn auto_long_press_exactly_at_boundary_is_ptt() {
-    // hold_delay == 300 ms; pressing for exactly 300 ms should be PTT.
+    // hold_delay == 300 ms; tick at exactly 300 ms should trigger PTT.
     let mut sm = auto_sm();
     let now = Instant::now();
-    sm.process(KeyAction::Down, at(now, 0));
-    let result = sm.process(KeyAction::Up, at(now, 300));
-    assert_eq!(result, Some(HotkeyEvent::StartRecording));
-    assert_eq!(sm.take_pending(), Some(HotkeyEvent::StopRecording));
+    assert_eq!(sm.process(KeyAction::Down, at(now, 0)), None);
+    // Tick at exactly 300 ms: duration_since == hold_delay → StartRecording.
+    assert_eq!(sm.tick(at(now, 300)), Some(HotkeyEvent::StartRecording));
+    assert_eq!(sm.process(KeyAction::Up, at(now, 300)), Some(HotkeyEvent::StopRecording));
 }
 
 #[test]
 fn auto_press_just_below_threshold_is_toggle() {
-    // 299 ms < 300 ms hold_delay → toggle.
+    // 299 ms < 300 ms hold_delay → tick does not fire; key-up produces toggle start.
     let mut sm = auto_sm();
     let now = Instant::now();
-    sm.process(KeyAction::Down, at(now, 0));
-    let result = sm.process(KeyAction::Up, at(now, 299));
-    assert_eq!(result, Some(HotkeyEvent::StartRecording));
-    assert_eq!(sm.take_pending(), None);
+    assert_eq!(sm.process(KeyAction::Down, at(now, 0)), None);
+    // Tick at 299 ms: hold_delay not yet elapsed → None.
+    assert_eq!(sm.tick(at(now, 299)), None);
+    // Key released before hold_delay → short press → StartRecording (toggle).
+    assert_eq!(sm.process(KeyAction::Up, at(now, 299)), Some(HotkeyEvent::StartRecording));
 }
 
 // ---------------------------------------------------------------------------
