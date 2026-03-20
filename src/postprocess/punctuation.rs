@@ -21,8 +21,17 @@ use crate::config::PunctMode;
 // CJK detection
 // ---------------------------------------------------------------------------
 
-/// Returns `true` if `c` is in any CJK Unified Ideographs block.
-fn is_cjk(c: char) -> bool {
+/// Returns `true` if `c` is relevant to CJK punctuation adjacency detection.
+///
+/// Beyond the CJK Unified Ideograph blocks this intentionally includes:
+/// - **CJK Symbols and Punctuation** (U+3000..=U+303F): used as sentence
+///   delimiters in CJK text, so punctuation next to them should be fullwidth.
+/// - **Halfwidth and Fullwidth Forms** (U+FF00..=U+FFEF): already-fullwidth
+///   characters; treating them as CJK context prevents double-conversion
+///   artefacts.
+/// - **Hiragana + Katakana** (U+3040..=U+30FF): Japanese syllabic scripts that
+///   follow the same punctuation conventions as CJK ideographs.
+fn is_cjk_context(c: char) -> bool {
     matches!(c,
         '\u{4E00}'..='\u{9FFF}'   // CJK Unified Ideographs
         | '\u{3400}'..='\u{4DBF}' // CJK Extension A
@@ -86,17 +95,15 @@ pub fn half_to_fullwidth(text: &str) -> String {
     let mut output = String::with_capacity(text.len());
 
     for (i, &c) in chars.iter().enumerate() {
-        if to_fullwidth(c).is_none() {
-            output.push(c);
-            continue;
-        }
+        if let Some(fw) = to_fullwidth(c) {
+            let prev_is_cjk = i > 0 && is_cjk_context(chars[i - 1]);
+            let next_is_cjk = i + 1 < chars.len() && is_cjk_context(chars[i + 1]);
 
-        let prev_is_cjk = i > 0 && is_cjk(chars[i - 1]);
-        let next_is_cjk = i + 1 < chars.len() && is_cjk(chars[i + 1]);
-
-        if prev_is_cjk || next_is_cjk {
-            // `to_fullwidth(c)` is `Some` — confirmed by the `is_none` guard above.
-            output.push(to_fullwidth(c).unwrap_or(c));
+            if prev_is_cjk || next_is_cjk {
+                output.push(fw);
+            } else {
+                output.push(c);
+            }
         } else {
             output.push(c);
         }

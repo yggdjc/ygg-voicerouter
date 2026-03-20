@@ -17,8 +17,8 @@
 //!
 //! 2. **Split-word pass**: an uppercase letter followed by a space and a
 //!    lowercase continuation (e.g. `T oken`) is merged into `Token`.
-//!    The letter `I` is excluded from this rule because `I <word>` is
-//!    grammatically valid English (e.g. "I am fine").
+//!    The letters `I` and `A` are excluded from this rule because they are
+//!    common standalone English words (e.g. "I am fine", "A word").
 //!
 //! # Examples
 //!
@@ -121,7 +121,7 @@ fn is_single_ascii_letter(s: &str) -> bool {
 
 /// Merge an uppercase letter followed by a space and a lowercase continuation.
 ///
-/// The letter `I` is excluded to preserve "I am", "I think", etc.
+/// The letters `I` and `A` are excluded to preserve "I am", "A word", etc.
 fn merge_split_word(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
@@ -131,7 +131,7 @@ fn merge_split_word(text: &str) -> String {
     while i < len {
         let c = chars[i];
 
-        // Pattern: single uppercase letter (not 'I') + space + lowercase letter
+        // Pattern: single uppercase letter (not 'I' or 'A') + space + lowercase letter.
         // Require that the uppercase letter is either at the start or preceded
         // by a space (word boundary on left), so we don't mis-merge inside words.
         let left_boundary = i == 0 || chars[i - 1] == ' ';
@@ -139,6 +139,7 @@ fn merge_split_word(text: &str) -> String {
         if left_boundary
             && c.is_ascii_uppercase()
             && c != 'I'
+            && c != 'A'
             && i + 2 < len
             && chars[i + 1] == ' '
             && chars[i + 2].is_ascii_lowercase()
@@ -228,10 +229,14 @@ mod tests {
     }
 
     #[test]
-    fn isolated_uppercase_before_lowercase_is_merged() {
-        // A single uppercase letter (not 'I') before a lowercase word is treated
-        // as a split token by the split-word pass. "Hello A world" → "Hello Aworld".
-        // This is the defined behaviour: only 'I' is exempted.
-        assert_eq!(fix_broken_english("Hello A world"), "Hello Aworld");
+    fn article_a_not_merged() {
+        // 'A' is a common standalone article and must not be merged with the
+        // following word, matching the exemption applied to 'I'.
+        assert_eq!(fix_broken_english("Hello A world"), "Hello A world");
+    }
+
+    #[test]
+    fn article_a_before_noun_unchanged() {
+        assert_eq!(fix_broken_english("Get A drink"), "Get A drink");
     }
 }

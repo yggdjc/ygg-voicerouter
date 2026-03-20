@@ -158,10 +158,10 @@ fn english_fix_empty() {
 }
 
 #[test]
-fn english_fix_isolated_uppercase_merges_with_following_word() {
-    // A single uppercase letter (non-'I') before a lowercase word is treated as
-    // a split token. Only 'I' is exempted to preserve "I am" grammar.
-    assert_eq!(fix_broken_english("Hello A world"), "Hello Aworld");
+fn english_fix_isolated_uppercase_a_not_merged() {
+    // 'A' is a common standalone article and must not be merged, matching the
+    // exemption already applied to 'I'.
+    assert_eq!(fix_broken_english("Hello A world"), "Hello A world");
 }
 
 // ---------------------------------------------------------------------------
