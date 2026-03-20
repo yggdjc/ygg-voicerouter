@@ -9,7 +9,6 @@ license = "MIT"
 sherpa-rs = "0.6"
 cpal = "0.15"
 evdev = "0.12"
-nnnoiseless = "0.3"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
