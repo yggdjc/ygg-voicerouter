@@ -2574,6 +2574,7 @@ dependencies = [
  "env_logger",
  "evdev",
  "hound",
+ "libc",
  "log",
  "nnnoiseless",
  "reqwest",
