@@ -62,11 +62,9 @@ pub fn model_info(model_name: &str, model_dir: &Path) -> Result<ModelInfo> {
             files: vec![
                 ModelFile {
                     url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/\
-                          sherpa-onnx-streaming-paraformer-bilingual-zh-en.tar.bz2"
+                          sherpa-onnx-paraformer-zh-2023-09-14.tar.bz2"
                         .to_owned(),
-                    // The archive extracts into a sub-directory; we reference
-                    // individual files after the user unpacks it.
-                    local_path: base.join("model.onnx"),
+                    local_path: base.join("model.int8.onnx"),
                 },
                 ModelFile {
                     url: String::new(), // bundled inside the same archive
@@ -130,7 +128,7 @@ pub fn get_model_paths(model_name: &str, model_dir: &Path) -> Result<ModelPaths>
     let base = model_dir.join(model_name);
     match model_name {
         "paraformer-zh" => Ok(ModelPaths {
-            model: base.join("model.onnx"),
+            model: base.join("model.int8.onnx"),
             tokens: base.join("tokens.txt"),
             extras: vec![],
         }),
@@ -258,7 +256,7 @@ mod tests {
     fn paraformer_paths_are_correct() {
         let dir = TempDir::new().unwrap();
         let paths = get_model_paths("paraformer-zh", dir.path()).unwrap();
-        assert!(paths.model.ends_with("model.onnx"));
+        assert!(paths.model.ends_with("model.int8.onnx"));
         assert!(paths.tokens.ends_with("tokens.txt"));
         assert!(paths.extras.is_empty());
     }
@@ -282,7 +280,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let model_dir = dir.path().join("paraformer-zh");
         std::fs::create_dir_all(&model_dir).unwrap();
-        std::fs::write(model_dir.join("model.onnx"), b"").unwrap();
+        std::fs::write(model_dir.join("model.int8.onnx"), b"").unwrap();
         std::fs::write(model_dir.join("tokens.txt"), b"").unwrap();
         assert!(model_files_exist("paraformer-zh", dir.path()).unwrap());
     }

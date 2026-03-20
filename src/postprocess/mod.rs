@@ -18,6 +18,7 @@
 //!     fix_english: true,
 //!     fullwidth_punct: true,
 //!     punct_mode: PunctMode::StripTrailing,
+//!     ..Default::default()
 //! };
 //! let result = postprocess("你好,世界.", &config);
 //! assert_eq!(result, "你好，世界");
@@ -48,6 +49,7 @@ use punctuation::{apply_punct_mode, half_to_fullwidth};
 ///     fix_english: true,
 ///     fullwidth_punct: true,
 ///     punct_mode: PunctMode::StripTrailing,
+///     ..Default::default()
 /// };
 /// assert_eq!(postprocess("你好,世界.", &config), "你好，世界");
 ///
@@ -56,6 +58,7 @@ use punctuation::{apply_punct_mode, half_to_fullwidth};
 ///     fix_english: false,
 ///     fullwidth_punct: false,
 ///     punct_mode: PunctMode::Keep,
+///     ..Default::default()
 /// };
 /// assert_eq!(postprocess("Hello.", &config_keep), "Hello.");
 /// ```
@@ -90,6 +93,7 @@ mod tests {
             fix_english: fix,
             fullwidth_punct: fw,
             punct_mode: mode,
+            ..Default::default()
         }
     }
 

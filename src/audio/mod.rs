@@ -64,6 +64,7 @@ impl AudioPipeline {
     pub fn stop_recording(&mut self) -> Option<Vec<f32>> {
         let raw = self.recorder.stop()?;
         if self.denoise_enabled {
+            log::debug!("applying RNNoise denoise to {} samples", raw.len());
             Some(apply_denoise(&raw))
         } else {
             Some(raw)

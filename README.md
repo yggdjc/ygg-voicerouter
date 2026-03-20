@@ -1,341 +1,171 @@
 # voicerouter
 
-**Voice router for Linux** — Offline speech recognition with pluggable handlers. Single binary, ~200MB RAM, CPU-only.
-
-Transform your voice into text on any Linux system without sending audio to the cloud. Write, command, and automate entirely offline.
-
-## Features
-
-- **Offline speech recognition** via [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Paraformer model)
-- **Multiple hotkey modes**: push-to-talk, toggle, and auto detection
-- **Audio denoising** with RNNoise for cleaner transcription
-- **Text injection** to any window (Wayland + X11 support)
-- **Voice router**: prefix-based routing to handlers (inject, LLM, shell)
-- **CJK-aware post-processing**: fullwidth punctuation, broken token fixes
-- **Audio feedback**: beep confirmation for recognition events
-- **systemd service support** for auto-start
-- **Zero-config** for basic voice input
-
-## Requirements
-
-- **Linux** (Ubuntu 22.04+, Fedora 38+, or similar)
-- **PulseAudio** or **PipeWire** (audio server)
-- **One of**:
-  - Wayland: `wl-copy` + `wtype` (or `ydotool`)
-  - X11: `xdotool`
-
-Audio format conversion (optional): `ffmpeg`
-
-## Installation
-
-### From Release (Recommended)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/yggdjc/ygg-voicerouter/main/scripts/install.sh | bash
-```
-
-This downloads the pre-built binary for your architecture (x86_64 or aarch64), installs to `~/.local/bin/`, and prompts for model download.
-
-### From Source
-
-```bash
-cargo build --release
-./target/release/voicerouter setup
-```
-
-Requires Rust 1.70+ and a C compiler.
-
-### Model Download
-
-voicerouter requires the Paraformer model. After installation, run:
-
-```bash
-voicerouter setup
-```
-
-This checks for model files and provides download instructions if missing. Models are cached in `~/.cache/voicerouter/models/`.
-
-For manual download, visit [sherpa-onnx releases](https://github.com/k2-fsa/sherpa-onnx/releases) and download the `paraformer-zh` model files.
-
-## Quick Start
-
-1. **Install dependencies** (Wayland example):
-   ```bash
-   # Ubuntu/Debian
-   sudo apt install wl-clipboard wtype
-
-   # Fedora
-   sudo dnf install wl-clipboard wtype
-   ```
-
-2. **Setup voicerouter**:
-   ```bash
-   voicerouter setup
-   ```
-
-3. **Start the daemon**:
-   ```bash
-   voicerouter
-   ```
-
-4. **Use it**:
-   - Press and hold **Right Alt** — indicator beep
-   - Speak your text
-   - Release **Right Alt** — transcription beep, text appears in focused window
-
-Try with a text editor, browser search, or chat app. Works anywhere you can type.
-
-### Hotkey Modes
-
-Configure in `~/.config/voicerouter/config.toml`:
-
-- **`ptt`** (push-to-talk): Hold key to record, release to transcribe. Default.
-- **`toggle`**: Press once to start, again to stop. Useful for hands-free.
-- **`auto`**: Detect speech automatically. Records silence-boundary detection.
-
-```toml
-[hotkey]
-mode = "auto"       # Options: ptt, toggle, auto
-hold_delay = 0.3    # Debounce for ptt mode (seconds)
-```
-
-## Configuration
-
-Configuration is read from `~/.config/voicerouter/config.toml`. A default is created on first run.
-
-Key sections:
-
-| Section | Purpose |
-|---------|---------|
-| `[hotkey]` | Hotkey binding, mode, hold delay |
-| `[audio]` | Sample rate, denoise, silence thresholds |
-| `[asr]` | ASR model path and streaming mode |
-| `[postprocess]` | Punctuation handling, fullwidth, English fixes |
-| `[inject]` | Text injection method (auto-detect or explicit) |
-| `[router]` | Voice routing rules (see below) |
-| `[llm]` | LLM handler config (optional) |
-| `[sound]` | Audio feedback beeps |
-
-See [defaults/config.toml](defaults/config.toml) for complete defaults.
-
-### Audio Configuration
-
-```toml
-[audio]
-sample_rate = 16000              # ASR model sample rate
-channels = 1                     # Mono input
-silence_threshold = 0.01         # RMS threshold for silence
-silence_duration = 1.5           # Seconds of silence to end recording
-max_record_seconds = 30          # Safety limit for recording
-denoise = true                   # Enable RNNoise denoising
-```
-
-### Injection Method
-
-```toml
-[inject]
-# Options: auto (detect), clipboard_paste, wtype, xdotool
-method = "auto"
-```
-
-- **`auto`**: Tries wtype on Wayland, xdotool on X11, falls back to clipboard
-- **`clipboard_paste`**: Copy to clipboard, Ctrl+V
-- **`wtype`**: Direct Wayland keystroke injection
-- **`xdotool`**: X11 XTest keystroke injection
-
-## Voice Router Rules
-
-Route recognized text to different handlers based on prefix matching.
-
-```toml
-[[router.rules]]
-trigger = "^搜索"          # Regex: "search" prefix in Chinese
-handler = "browser_search"
-
-[[router.rules]]
-trigger = "^remind me"     # English
-handler = "reminder"
-
-[[router.rules]]
-# Default: no match → text injected to focused window
-handler = "inject"
-```
-
-### Built-in Handlers
-
-| Handler | Action |
-|---------|--------|
-| `inject` | Inject recognized text to focused window |
-| `shell` | Execute shell command (e.g., `eval ${text}`) |
-| `llm` | Send to LLM (requires config) |
-
-Example shell handler:
-
-```toml
-[[router.rules]]
-trigger = "^play"
-handler = "shell"
-# Expands to: shell_exec("mpv music.mp3")
-```
-
-Example LLM handler (requires OpenAI API key):
-
-```toml
-[llm]
-enabled = true
-api_key_env = "OPENAI_API_KEY"
-model = "gpt-4o-mini"
-
-[[router.rules]]
-trigger = "^ask"
-handler = "llm"
-# Extracts question, sends to LLM, speaks result (if TTS enabled)
-```
-
-## Service Management
-
-Run voicerouter as a systemd user service:
-
-```bash
-# Install and enable
-voicerouter service install
-
-# Start/stop
-voicerouter service start
-voicerouter service stop
-
-# Check status
-voicerouter service status
-
-# Uninstall
-voicerouter service uninstall
-```
-
-Logs: `journalctl --user -u voicerouter -f`
-
-## Troubleshooting
-
-### Audio Input Not Working
-
-Test microphone input:
-
-```bash
-voicerouter --test-audio
-```
-
-Should display RMS levels. If stuck at 0.0, check:
-- PulseAudio/PipeWire running: `pactl list short sinks`
-- Microphone selected: `pavucontrol` (GUI) or `pactl set-default-source`
-- Volume: `alsamixer`
-
-### Text Not Injecting
-
-Test text injection:
-
-```bash
-voicerouter --test-inject "Hello, world!"
-```
-
-Should inject text to focused window. If nothing happens:
-- **Wayland**: Ensure wtype/ydotool installed; check `echo $WAYLAND_DISPLAY`
-- **X11**: Ensure xdotool installed; check `echo $DISPLAY`
-- **Clipboard**: Try manually pasting: `echo "test" | wl-copy && Ctrl+V`
-
-### Poor Transcription
-
-- **Noisy environment**: Enable denoising in config:
-  ```toml
-  [audio]
-  denoise = true
-  ```
-- **Wrong model**: Check ASR model matches language:
-  ```bash
-  voicerouter config asr.model
-  # Options: paraformer-zh, paraformer-en, etc.
-  ```
-- **Low volume**: Check input levels: `voicerouter --test-audio`
-
-### Service Not Starting
-
-```bash
-journalctl --user -u voicerouter -n 50
-```
-
-Common issues:
-- Dependencies missing (see [Requirements](#requirements))
-- Model files not found: run `voicerouter setup`
-- Audio device unavailable: wait for PulseAudio/PipeWire startup
-
-## Performance Comparison
-
-| Metric | Python (ygg-voiceim) | Rust (ygg-voicerouter) |
-|--------|---------------------|----------------------|
-| RAM | 3.4 GB | ~200-300 MB |
-| VRAM | 2.2 GB | 0 (CPU ONNX) |
-| Startup | ~20s | ~2s |
-| Binary | ~10GB (.venv) | ~50-100 MB |
-| Transcription | Real-time | Real-time |
-
-Rust version is 10x lighter and 10x faster to start.
-
-## Development
-
-### Building from Source
+**Linux 语音路由器** — 离线语音识别 + 可扩展的语音指令系统。单一二进制，~635MB 内存，纯 CPU 推理，零 VRAM。
+
+[English](README_en.md)
+
+## 特性
+
+- **离线语音识别** — 基于 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 的 Paraformer 模型，不需要网络
+- **神经标点恢复** — ct-transformer 模型自动添加标点符号
+- **三种热键模式** — 按住说话 (PTT)、切换、自动（短按切换/长按 PTT）
+- **文字注入** — 识别结果直接输入到当前聚焦的窗口（Wayland + X11）
+- **语音路由** — 基于前缀匹配的指令分发，支持 inject/LLM/shell 三种处理器
+- **中英文混合** — Paraformer 双语模型，中英文无缝切换
+- **CJK 后处理** — 全角标点转换、断裂英文 token 修复
+- **音频反馈** — 录音开始/结束时播放提示音
+- **systemd 服务** — 开机自启动
+
+## 资源占用对比
+
+| 指标 | voicerouter (Rust) | voice-input (Python) |
+|------|-------------------|---------------------|
+| RAM | ~635 MB | ~3,400 MB |
+| VRAM | 0 | ~2,200 MB |
+| 启动时间 | ~2 秒 | ~20 秒 |
+| 二进制大小 | ~8 MB | ~10 GB (.venv) |
+| 模型磁盘 | 319 MB | ~5 GB+ |
+| 运行时依赖 | 无 | Python + PyTorch + CUDA |
+
+## 系统要求
+
+- **Linux**（Ubuntu 22.04+、Fedora 38+ 等）
+- **PulseAudio** 或 **PipeWire**
+- 文字注入工具（任选其一）：
+  - Wayland：`wl-copy` + `ydotool`（推荐）或 `wtype`（仅 wlroots）
+  - X11：`xdotool`
+- 可选：`ffmpeg`（音频格式转换）
+
+## 安装
+
+### 从源码编译
 
 ```bash
 git clone https://github.com/yggdjc/ygg-voicerouter.git
 cd ygg-voicerouter
 cargo build --release
-./target/release/voicerouter setup
-./target/release/voicerouter
 ```
 
-### Running Tests
+### 下载模型
 
 ```bash
-cargo test
+# ASR 模型（Paraformer 中英双语，243MB）
+mkdir -p ~/.cache/voicerouter/models
+cd ~/.cache/voicerouter/models
+curl -LO https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-paraformer-zh-2023-09-14.tar.bz2
+tar -xjf sherpa-onnx-paraformer-zh-2023-09-14.tar.bz2
+mv sherpa-onnx-paraformer-zh-2023-09-14 paraformer-zh
+
+# 标点模型（ct-transformer，76MB）
+curl -LO https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8.tar.bz2
+tar -xjf sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8.tar.bz2
+mv sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8 ct-punc
 ```
 
-### Code Quality
+### 环境检查
 
 ```bash
-# Format and lint
-cargo fmt
-cargo clippy
+# 需要设置 LD_LIBRARY_PATH 指向 sherpa-onnx 动态库
+export LD_LIBRARY_PATH=target/release:$LD_LIBRARY_PATH
+
+voicerouter setup
 ```
 
-### Project Structure
+## 快速开始
 
-```
-src/
-├── main.rs              # CLI entry point and daemon loop
-├── lib.rs               # Public library interface
-├── asr/                 # Speech recognition (sherpa-onnx)
-├── audio/               # Audio capture and denoising
-├── hotkey/              # Hotkey monitoring (evdev)
-├── inject/              # Text injection (Wayland/X11)
-├── router/              # Voice routing and handlers
-├── postprocess/         # Text post-processing
-└── sound.rs             # Audio feedback
+```bash
+# 启动（预加载模型，首次识别更快）
+voicerouter --preload
+
+# 按右 Alt 键说话，松开后文字自动输入到当前窗口
 ```
 
-## License
+默认配置：
+- 热键：`KEY_RIGHTALT`（右 Alt）
+- 模式：`auto`（短按切换，长按 PTT）
+- 标点：保留中间标点，去除末尾标点
 
-MIT License. See [LICENSE](LICENSE) for details.
+## 配置
 
-## Contributing
+配置文件位于 `~/.config/voicerouter/config.toml`，首次运行 `voicerouter setup` 自动创建。
 
-Contributions welcome! Please:
+### 热键
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/something`)
-3. Commit changes with clear messages
-4. Open a pull request
-5. Ensure tests pass: `cargo test && cargo clippy`
+```toml
+[hotkey]
+key = "KEY_RIGHTALT"    # evdev 键名
+mode = "auto"           # ptt | toggle | auto
+hold_delay = 0.3        # auto 模式长按阈值（秒）
+```
 
-## Acknowledgments
+### 音频
 
-- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — Speech recognition
-- [RNNoise](https://github.com/xiph/rnnoise) — Audio denoising
-- [evdev](https://github.com/ndarilek/rdev) — Hotkey monitoring
-- Community feedback and testing
+```toml
+[audio]
+sample_rate = 16000
+denoise = false         # RNNoise 去噪（实验性，可能降低识别率）
+```
+
+### 后处理
+
+```toml
+[postprocess]
+punct_mode = "strip_trailing"  # keep | strip_trailing | replace_space
+fullwidth_punct = true         # CJK 全角标点转换
+fix_english = true             # 修复断裂英文 token
+restore_punctuation = true     # ct-transformer 标点恢复
+```
+
+标点模式说明：
+- `keep` — 保留所有标点（你好，世界。）
+- `strip_trailing` — 去除末尾标点（你好，世界）
+- `replace_space` — 用空格替代标点（你好 世界）
+
+### 语音路由
+
+```toml
+[router]
+# 前缀匹配规则，第一个匹配的生效
+[[router.rules]]
+trigger = "搜索 "
+handler = "shell"
+
+[[router.rules]]
+trigger = "hey assistant "
+handler = "llm"
+```
+
+说"搜索 天气预报"会执行 shell 命令 `天气预报`。不匹配任何规则时默认注入文字。
+
+## CLI 命令
+
+```bash
+voicerouter                  # 启动守护进程
+voicerouter --preload        # 预加载模型后启动
+voicerouter --test-audio     # 测试麦克风（录 3 秒，显示 RMS）
+voicerouter --test-inject "你好"  # 测试文字注入
+voicerouter setup            # 检查工具和模型
+voicerouter service install  # 安装 systemd 用户服务
+voicerouter service start    # 启动服务
+voicerouter service status   # 查看状态
+```
+
+## 架构
+
+```
+按键 → 录音 → [去噪] → ASR 识别 → 标点恢复 → 后处理 → 路由分发
+                                                         ├─ inject（默认：注入文字）
+                                                         ├─ llm（调用 LLM API）
+                                                         └─ shell（执行命令）
+```
+
+## 已知限制
+
+- sherpa-rs 0.6 仅支持离线推理，不支持流式识别
+- 热词功能不可用（Paraformer 模型不支持）
+- RNNoise 去噪可能过于激进，建议保持 `denoise = false`
+- `wtype` 在 GNOME Wayland 下不可用（自动回退到 clipboard-paste）
+
+## 许可
+
+MIT

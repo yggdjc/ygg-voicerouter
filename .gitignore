@@ -1,3 +1,7 @@
 /target
 *.rs.bk
+*.swp
 .env
+.idea/
+.vscode/
+*.tar.bz2

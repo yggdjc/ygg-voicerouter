@@ -149,6 +149,10 @@ pub struct PostprocessConfig {
     pub fullwidth_punct: bool,
     /// Attempt to fix spacing around inline English words.
     pub fix_english: bool,
+    /// Restore punctuation using ct-transformer model (sherpa-onnx).
+    pub restore_punctuation: bool,
+    /// Path to the ct-transformer punctuation model directory.
+    pub punctuation_model: String,
 }
 
 impl Default for PostprocessConfig {
@@ -157,6 +161,8 @@ impl Default for PostprocessConfig {
             punct_mode: PunctMode::default(),
             fullwidth_punct: true,
             fix_english: true,
+            restore_punctuation: true,
+            punctuation_model: "~/.cache/voicerouter/models/ct-punc".to_owned(),
         }
     }
 }

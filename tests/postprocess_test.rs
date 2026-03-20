@@ -169,7 +169,7 @@ fn english_fix_isolated_uppercase_a_not_merged() {
 // ---------------------------------------------------------------------------
 
 fn cfg(fix: bool, fw: bool, mode: PunctMode) -> PostprocessConfig {
-    PostprocessConfig { fix_english: fix, fullwidth_punct: fw, punct_mode: mode }
+    PostprocessConfig { fix_english: fix, fullwidth_punct: fw, punct_mode: mode, ..Default::default() }
 }
 
 #[test]

@@ -119,9 +119,9 @@ pub fn clipboard_paste(text: &str) -> Result<()> {
     // 3. Simulate Ctrl+V.
     send_paste_key().context("clipboard_paste: failed to send paste keystroke")?;
 
-    // 4. Brief delay so the target app can process the paste before we clobber
-    //    the clipboard again.
-    thread::sleep(Duration::from_millis(100));
+    // 4. Wait for the target app to process the paste before restoring the
+    //    clipboard.  500 ms covers slow Electron apps.
+    thread::sleep(Duration::from_millis(500));
 
     // 5. Restore original clipboard content (best-effort).
     if let Err(e) = write_clipboard(&saved) {
@@ -163,8 +163,27 @@ fn read_clipboard() -> Result<String> {
 /// Write `text` to the clipboard using the best available tool.
 fn write_clipboard(text: &str) -> Result<()> {
     if is_command_available("wl-copy") {
-        // wl-copy reads from stdin when no argument is given; pass via arg.
-        run_command("wl-copy", &[text])?;
+        // Write text via stdin pipe.  wl-copy forks a background daemon to
+        // serve the clipboard; the parent exits once the daemon is ready,
+        // so waiting for the child guarantees the clipboard is set.
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("wl-copy")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("write_clipboard: failed to spawn wl-copy")?;
+        if let Some(ref mut stdin) = child.stdin {
+            stdin
+                .write_all(text.as_bytes())
+                .context("write_clipboard: failed to write to wl-copy stdin")?;
+        }
+        // Drop stdin so wl-copy sees EOF and finishes setup.
+        drop(child.stdin.take());
+        child
+            .wait()
+            .context("write_clipboard: wl-copy failed")?;
         return Ok(());
     }
     if is_command_available("xclip") {

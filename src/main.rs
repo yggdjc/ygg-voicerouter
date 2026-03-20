@@ -166,6 +166,9 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
         None
     };
 
+    // Lazy-initialised punctuation restorer (ct-transformer via sherpa-onnx).
+    let mut punctuator: Option<sherpa_rs::punctuate::Punctuation> = None;
+
     let mut recording_start: Option<Instant> = None;
 
     log::info!("ready — listening for hotkey '{}'", config.hotkey.key);
@@ -176,6 +179,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
                 event,
                 &mut audio,
                 &mut asr_engine,
+                &mut punctuator,
                 &config,
                 &router,
                 &mut recording_start,
@@ -193,6 +197,7 @@ fn handle_event(
     event: HotkeyEvent,
     audio: &mut AudioPipeline,
     asr_engine: &mut Option<AsrEngine>,
+    punctuator: &mut Option<sherpa_rs::punctuate::Punctuation>,
     config: &Config,
     router: &Router,
     recording_start: &mut Option<Instant>,
@@ -200,7 +205,7 @@ fn handle_event(
     match event {
         HotkeyEvent::StartRecording => on_start_recording(audio, config, recording_start),
         HotkeyEvent::StopRecording => {
-            on_stop_recording(audio, asr_engine, config, router, recording_start);
+            on_stop_recording(audio, asr_engine, punctuator, config, router, recording_start);
         }
     }
 }
@@ -224,9 +229,16 @@ fn on_start_recording(
     *recording_start = Some(Instant::now());
 }
 
+/// Minimum recording duration in seconds — shorter clips are discarded.
+const MIN_RECORDING_SECS: f32 = 0.3;
+
+/// RMS amplitude below which a recording is considered silence and discarded.
+const SILENCE_RMS_THRESHOLD: f32 = 0.005;
+
 fn on_stop_recording(
     audio: &mut AudioPipeline,
     asr_engine: &mut Option<AsrEngine>,
+    punctuator: &mut Option<sherpa_rs::punctuate::Punctuation>,
     config: &Config,
     router: &Router,
     recording_start: &mut Option<Instant>,
@@ -234,10 +246,33 @@ fn on_stop_recording(
     let elapsed = recording_start.take().map_or(0.0, |t| t.elapsed().as_secs_f32());
     log::info!("Recording stopped ({elapsed:.1}s)");
 
+    // Play done beep immediately on key-up, before processing.
+    if config.sound.feedback {
+        sound::beep_done().ok();
+    }
+
     let Some(samples) = audio.stop_recording() else {
         log::warn!("stop_recording returned no data");
         return;
     };
+
+    // Filter: too short.
+    if elapsed < MIN_RECORDING_SECS {
+        log::info!("recording too short ({elapsed:.1}s < {MIN_RECORDING_SECS}s), discarding");
+        return;
+    }
+
+    // Filter: silence (compute overall RMS of the captured samples).
+    let rms = if samples.is_empty() {
+        0.0
+    } else {
+        let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+        (sum_sq / samples.len() as f32).sqrt()
+    };
+    if rms < SILENCE_RMS_THRESHOLD {
+        log::info!("recording is silence (RMS {rms:.4} < {SILENCE_RMS_THRESHOLD}), discarding");
+        return;
+    }
 
     let text = match transcribe(samples, asr_engine, config) {
         Ok(t) => t,
@@ -252,11 +287,11 @@ fn on_stop_recording(
 
     if text.is_empty() {
         log::info!("Transcribed: (empty)");
-        if config.sound.feedback {
-            sound::beep_done().ok();
-        }
         return;
     }
+
+    // Restore punctuation via ct-transformer if enabled.
+    let text = add_punctuation(&text, punctuator, config);
 
     let processed = postprocess(&text, &config.postprocess);
     log::info!("Transcribed: {processed:?}");
@@ -267,11 +302,6 @@ fn on_stop_recording(
         if config.sound.feedback {
             sound::beep_error().ok();
         }
-        return;
-    }
-
-    if config.sound.feedback {
-        sound::beep_done().ok();
     }
 }
 
@@ -289,6 +319,53 @@ fn transcribe(
     }
     let engine = asr_engine.as_mut().expect("engine was just set");
     engine.transcribe(&samples, config.audio.sample_rate)
+}
+
+/// Restore punctuation using ct-transformer model (lazy init).
+fn add_punctuation(
+    text: &str,
+    punctuator: &mut Option<sherpa_rs::punctuate::Punctuation>,
+    config: &Config,
+) -> String {
+    if !config.postprocess.restore_punctuation {
+        return text.to_owned();
+    }
+
+    // Lazy-init the punctuation model.
+    if punctuator.is_none() {
+        let model_path = match voicerouter::asr::models::expand_tilde(
+            &config.postprocess.punctuation_model,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("punctuation model path error: {e}");
+                return text.to_owned();
+            }
+        };
+        let model_file = model_path.join("model.int8.onnx");
+        if !model_file.exists() {
+            log::warn!(
+                "punctuation model not found at {}; skipping",
+                model_file.display()
+            );
+            return text.to_owned();
+        }
+        log::info!("loading punctuation model from {}", model_file.display());
+        let cfg = sherpa_rs::punctuate::PunctuationConfig {
+            model: model_file.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        match sherpa_rs::punctuate::Punctuation::new(cfg) {
+            Ok(p) => *punctuator = Some(p),
+            Err(e) => {
+                log::error!("punctuation model init failed: {e}");
+                return text.to_owned();
+            }
+        }
+    }
+
+    let punc = punctuator.as_mut().expect("just initialised");
+    punc.add_punctuation(text)
 }
 
 // ---------------------------------------------------------------------------
