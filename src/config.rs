@@ -100,7 +100,7 @@ pub struct AudioConfig {
     pub silence_duration: f64,
     /// Hard cap on recording length in seconds.
     pub max_record_seconds: u32,
-    /// Whether to apply RNNoise denoising.
+    /// Whether to apply `RNNoise` denoising.
     pub denoise: bool,
 }
 
@@ -232,6 +232,7 @@ impl Config {
     /// Return the default config file path: `~/.config/voicerouter/config.toml`.
     ///
     /// Returns `None` if the home directory cannot be determined.
+    #[must_use]
     pub fn default_path() -> Option<PathBuf> {
         dirs::config_dir().map(|d| d.join("voicerouter").join("config.toml"))
     }

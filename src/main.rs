@@ -38,7 +38,7 @@ fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level)).init();
 
     let config = voicerouter::config::Config::load(cli.config.as_deref())?;
-    log::debug!("loaded config: {:?}", config);
+    log::debug!("loaded config: {config:?}");
 
     match cli.command {
         None => {
@@ -48,7 +48,7 @@ fn main() -> Result<()> {
             log::info!("Setup not yet implemented.");
         }
         Some(Commands::Config { key, value }) => {
-            log::info!("Config key={:?} value={:?} — not yet implemented.", key, value);
+            log::info!("Config key={key:?} value={value:?} — not yet implemented.");
         }
         Some(Commands::Service { action }) => {
             log::info!("Service action={action} — not yet implemented.");
