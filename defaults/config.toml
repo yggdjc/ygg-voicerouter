@@ -1,6 +1,6 @@
 [hotkey]
 key = "KEY_RIGHTALT"
-mode = "auto"           # ptt | toggle | auto
+mode = "auto"               # ptt | toggle | auto
 hold_delay = 0.3
 
 [audio]
@@ -17,14 +17,22 @@ model_dir = "~/.cache/voicerouter/models"
 streaming = true
 
 [postprocess]
-punct_mode = "strip_trailing"
+punct_mode = "strip_trailing"  # strip_trailing | keep | replace_space
 fullwidth_punct = true
 fix_english = true
 
 [inject]
-method = "auto"
+method = "auto"             # auto | clipboard_paste | wtype | xdotool
 
 [router]
+# Rules are evaluated top-to-bottom; first match wins.
+# [[router.rules]]
+# trigger = "^搜索"
+# handler = "browser_search"
+#
+# [[router.rules]]
+# trigger = "^打开终端"
+# handler = "open_terminal"
 
 [llm]
 enabled = false

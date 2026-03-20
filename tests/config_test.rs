@@ -3,7 +3,7 @@
 use std::io::Write as _;
 
 use tempfile::NamedTempFile;
-use voicerouter::config::Config;
+use voicerouter::config::{Config, HotkeyMode, InjectMethod, PunctMode};
 
 /// The bundled default config as a compile-time string.
 const DEFAULT_CONFIG: &str = include_str!("../defaults/config.toml");
@@ -14,7 +14,7 @@ fn default_config_toml_parses() {
 
     // [hotkey]
     assert_eq!(config.hotkey.key, "KEY_RIGHTALT");
-    assert_eq!(config.hotkey.mode, "auto");
+    assert_eq!(config.hotkey.mode, HotkeyMode::Auto);
     assert!((config.hotkey.hold_delay - 0.3).abs() < f64::EPSILON);
 
     // [audio]
@@ -31,12 +31,12 @@ fn default_config_toml_parses() {
     assert!(config.asr.streaming);
 
     // [postprocess]
-    assert_eq!(config.postprocess.punct_mode, "strip_trailing");
+    assert_eq!(config.postprocess.punct_mode, PunctMode::StripTrailing);
     assert!(config.postprocess.fullwidth_punct);
     assert!(config.postprocess.fix_english);
 
     // [inject]
-    assert_eq!(config.inject.method, "auto");
+    assert_eq!(config.inject.method, InjectMethod::Auto);
 
     // [router] — rules must default to empty
     assert!(config.router.rules.is_empty());

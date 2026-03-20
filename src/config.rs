@@ -18,6 +18,51 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
+// Mode enums
+// ---------------------------------------------------------------------------
+
+/// Hotkey activation mode.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum HotkeyMode {
+    /// Push-to-talk: active only while key is held.
+    Ptt,
+    /// Toggle: press once to start, press again to stop.
+    Toggle,
+    /// Automatic: short press toggles, long press acts as PTT.
+    #[default]
+    Auto,
+}
+
+/// How trailing punctuation is handled in ASR output.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PunctMode {
+    /// Remove trailing punctuation marks.
+    #[default]
+    StripTrailing,
+    /// Keep punctuation as produced by the ASR model.
+    Keep,
+    /// Replace space characters around punctuation.
+    ReplaceSpace,
+}
+
+/// Text injection back-end.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum InjectMethod {
+    /// Detect the best available method at runtime.
+    #[default]
+    Auto,
+    /// Copy to clipboard and simulate paste keystroke.
+    ClipboardPaste,
+    /// Use `wtype` (Wayland).
+    Wtype,
+    /// Use `xdotool` (X11).
+    Xdotool,
+}
+
+// ---------------------------------------------------------------------------
 // Sub-config structs
 // ---------------------------------------------------------------------------
 
@@ -27,8 +72,8 @@ use serde::{Deserialize, Serialize};
 pub struct HotkeyConfig {
     /// evdev key name, e.g. `KEY_RIGHTALT`.
     pub key: String,
-    /// Activation mode: `ptt`, `toggle`, or `auto`.
-    pub mode: String,
+    /// Activation mode.
+    pub mode: HotkeyMode,
     /// Seconds of hold before activating in `auto` mode.
     pub hold_delay: f64,
 }
@@ -37,7 +82,7 @@ impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
             key: "KEY_RIGHTALT".to_owned(),
-            mode: "auto".to_owned(),
+            mode: HotkeyMode::default(),
             hold_delay: 0.3,
         }
     }
@@ -98,8 +143,8 @@ impl Default for AsrConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PostprocessConfig {
-    /// How trailing punctuation is handled: `strip_trailing` or `keep`.
-    pub punct_mode: String,
+    /// How trailing punctuation is handled.
+    pub punct_mode: PunctMode,
     /// Convert ASCII punctuation to fullwidth CJK equivalents.
     pub fullwidth_punct: bool,
     /// Attempt to fix spacing around inline English words.
@@ -109,7 +154,7 @@ pub struct PostprocessConfig {
 impl Default for PostprocessConfig {
     fn default() -> Self {
         Self {
-            punct_mode: "strip_trailing".to_owned(),
+            punct_mode: PunctMode::default(),
             fullwidth_punct: true,
             fix_english: true,
         }
@@ -117,19 +162,11 @@ impl Default for PostprocessConfig {
 }
 
 /// Text injection configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct InjectConfig {
-    /// Injection back-end: `auto`, `xdotool`, `ydotool`, or `clipboard`.
-    pub method: String,
-}
-
-impl Default for InjectConfig {
-    fn default() -> Self {
-        Self {
-            method: "auto".to_owned(),
-        }
-    }
+    /// Injection back-end.
+    pub method: InjectMethod,
 }
 
 /// A single routing rule mapping a trigger pattern to a handler.
@@ -150,16 +187,10 @@ pub struct RouterConfig {
 }
 
 /// LLM integration configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LlmConfig {
     pub enabled: bool,
-}
-
-impl Default for LlmConfig {
-    fn default() -> Self {
-        Self { enabled: false }
-    }
 }
 
 /// Audio feedback (earcon) configuration.
@@ -262,5 +293,34 @@ mod tests {
     fn router_rules_default_empty() {
         let config = Config::default();
         assert!(config.router.rules.is_empty());
+    }
+
+    #[test]
+    fn hotkey_mode_deserializes() {
+        let toml = "[hotkey]\nmode = \"ptt\"\n";
+        let config: Config = toml::from_str(toml).expect("parse failed");
+        assert_eq!(config.hotkey.mode, HotkeyMode::Ptt);
+    }
+
+    #[test]
+    fn punct_mode_deserializes() {
+        let toml = "[postprocess]\npunct_mode = \"keep\"\n";
+        let config: Config = toml::from_str(toml).expect("parse failed");
+        assert_eq!(config.postprocess.punct_mode, PunctMode::Keep);
+    }
+
+    #[test]
+    fn inject_method_deserializes() {
+        let toml = "[inject]\nmethod = \"wtype\"\n";
+        let config: Config = toml::from_str(toml).expect("parse failed");
+        assert_eq!(config.inject.method, InjectMethod::Wtype);
+    }
+
+    #[test]
+    fn default_modes_are_correct() {
+        let config = Config::default();
+        assert_eq!(config.hotkey.mode, HotkeyMode::Auto);
+        assert_eq!(config.postprocess.punct_mode, PunctMode::StripTrailing);
+        assert_eq!(config.inject.method, InjectMethod::Auto);
     }
 }
