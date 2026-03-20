@@ -45,10 +45,35 @@ pub fn inject(text: &str, method: InjectMethod) -> Result<()> {
 // Method detection
 // ---------------------------------------------------------------------------
 
+/// Return `true` if `wtype` is installed **and** the running compositor
+/// actually supports the `zwp_virtual_keyboard_v1` protocol.
+///
+/// GNOME Wayland does not implement that protocol, so `wtype` exits with a
+/// non-zero status on GNOME even though the binary is present.  Probing with
+/// an empty string argument is cheap and reliable.
+fn wtype_works() -> bool {
+    if !is_command_available("wtype") {
+        return false;
+    }
+    // Probe: wtype with an empty string — if the compositor does not support
+    // the virtual keyboard protocol it exits immediately with status 1.
+    std::process::Command::new("wtype")
+        .arg("")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Choose the best injection method available on the current session.
 ///
 /// Priority:
-/// 1. `wtype` if running under Wayland and `wtype` is installed.
+/// 1. `wtype` if running under Wayland **and** the compositor supports the
+///    `zwp_virtual_keyboard_v1` protocol (wlroots-based compositors such as
+///    Sway and Hyprland).  `wtype` is installed but non-functional on GNOME
+///    Wayland, which does not implement that protocol, so availability alone
+///    is not sufficient — we probe with an empty invocation first.
 /// 2. Clipboard-paste if a clipboard tool (`wl-paste` / `xclip`) and a
 ///    key-injection tool (`ydotool` / `xdotool`) are present.
 /// 3. `xdotool` if running under X11 and `xdotool` is installed.
@@ -58,7 +83,7 @@ pub fn detect_method() -> InjectMethod {
     let is_wayland = is_wayland_session();
     let is_x11 = is_x11_session();
 
-    if is_wayland && is_command_available("wtype") {
+    if is_wayland && wtype_works() {
         return InjectMethod::Wtype;
     }
 
