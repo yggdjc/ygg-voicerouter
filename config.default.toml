@@ -1,0 +1,47 @@
+# voicerouter default configuration
+# Copy to ~/.config/voicerouter/config.toml and edit as needed.
+
+[hotkey]
+# evdev key name to trigger recording.
+key = "KEY_RIGHTALT"
+# Activation mode: "ptt", "toggle", or "auto"
+mode = "auto"
+# Seconds of hold before long-press activates in auto mode.
+hold_delay = 0.3
+
+[audio]
+sample_rate = 16000
+channels = 1
+silence_threshold = 0.01
+silence_duration = 1.5
+max_record_seconds = 30
+denoise = true
+
+[asr]
+# Model identifier: "paraformer-zh", "whisper-tiny-en", "whisper-base-en"
+model = "paraformer-zh"
+model_dir = "~/.cache/voicerouter/models"
+
+[postprocess]
+# "strip_trailing", "keep", or "replace_space"
+punct_mode = "strip_trailing"
+fullwidth_punct = true
+fix_english = true
+
+[inject]
+# "auto", "clipboard_paste", "wtype", "xdotool"
+method = "auto"
+
+[sound]
+feedback = true
+
+[llm]
+enabled = false
+
+[router]
+# Add routing rules here.  First match wins.
+# Example:
+# [[router.rules]]
+# trigger = "search "
+# handler = "shell"
+rules = []
