@@ -153,6 +153,9 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     let mut audio = AudioPipeline::new(&config.audio)
         .context("failed to open audio device")?;
 
+    // Auto-calibrate silence threshold from 1s of ambient noise.
+    let silence_threshold = calibrate_silence(&mut audio, &config);
+
     let mut monitor = HotkeyMonitor::new(&config.hotkey)
         .context("failed to open hotkey monitor")?;
 
@@ -183,6 +186,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
                 &config,
                 &router,
                 &mut recording_start,
+                silence_threshold,
             );
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -201,11 +205,12 @@ fn handle_event(
     config: &Config,
     router: &Router,
     recording_start: &mut Option<Instant>,
+    silence_threshold: f32,
 ) {
     match event {
         HotkeyEvent::StartRecording => on_start_recording(audio, config, recording_start),
         HotkeyEvent::StopRecording => {
-            on_stop_recording(audio, asr_engine, punctuator, config, router, recording_start);
+            on_stop_recording(audio, asr_engine, punctuator, config, router, recording_start, silence_threshold);
         }
         HotkeyEvent::CancelAndToggle => {
             // Auto mode short press: discard tentative PTT recording,
@@ -251,6 +256,7 @@ fn on_stop_recording(
     config: &Config,
     router: &Router,
     recording_start: &mut Option<Instant>,
+    silence_threshold: f32,
 ) {
     let elapsed = recording_start.take().map_or(0.0, |t| t.elapsed().as_secs_f32());
     log::info!("Recording stopped ({elapsed:.1}s)");
@@ -278,9 +284,8 @@ fn on_stop_recording(
         let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
         (sum_sq / samples.len() as f32).sqrt()
     };
-    let threshold = config.audio.silence_threshold as f32;
-    if rms < threshold {
-        log::info!("recording is silence (RMS {rms:.4} < {threshold}), discarding");
+    if rms < silence_threshold {
+        log::info!("recording is silence (RMS {rms:.4} < {silence_threshold}), discarding");
         return;
     }
 
@@ -313,6 +318,37 @@ fn on_stop_recording(
             sound::beep_error().ok();
         }
     }
+}
+
+/// Record 1 second of ambient noise and derive a silence threshold.
+///
+/// Returns `max(ambient_rms * 2.5, config.silence_threshold)` so the
+/// threshold adapts to the current environment but never drops below the
+/// configured floor.
+fn calibrate_silence(audio: &mut AudioPipeline, config: &Config) -> f32 {
+    let floor = config.audio.silence_threshold as f32;
+
+    log::info!("calibrating silence threshold (1s ambient sample)…");
+    if audio.start_recording().is_err() {
+        log::warn!("calibration failed — using config default {floor}");
+        return floor;
+    }
+    std::thread::sleep(Duration::from_secs(1));
+    let samples = audio.stop_recording().unwrap_or_default();
+
+    if samples.is_empty() {
+        log::warn!("calibration got no samples — using config default {floor}");
+        return floor;
+    }
+
+    let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+    let ambient_rms = (sum_sq / samples.len() as f32).sqrt();
+    let threshold = (ambient_rms * 2.5).max(floor);
+
+    log::info!(
+        "ambient RMS: {ambient_rms:.4}, silence threshold: {threshold:.4} (floor: {floor})"
+    );
+    threshold
 }
 
 /// Run ASR on `samples`, lazily initialising the engine if not yet created.
