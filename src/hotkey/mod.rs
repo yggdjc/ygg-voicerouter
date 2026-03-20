@@ -102,6 +102,14 @@ impl HotkeyStateMachine {
     ///
     /// let sm = HotkeyStateMachine::new(HotkeyMode::Ptt, 0.3);
     /// ```
+    /// Reset the state machine to Idle.
+    ///
+    /// Call this when recording is stopped externally (e.g. silence auto-stop)
+    /// so the state machine doesn't think it's still in Recording/WaitingRelease.
+    pub fn reset(&mut self) {
+        self.state = HotkeyState::Idle;
+    }
+
     #[must_use]
     pub fn new(mode: HotkeyMode, hold_delay_secs: f64) -> Self {
         Self {

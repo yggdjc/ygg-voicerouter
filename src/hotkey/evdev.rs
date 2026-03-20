@@ -111,6 +111,11 @@ impl HotkeyMonitor {
         })
     }
 
+    /// Reset the state machine to Idle (e.g. after silence auto-stop).
+    pub fn reset(&mut self) {
+        self.state_machine.reset();
+    }
+
     /// Poll all devices for the next pending [`HotkeyEvent`], if any.
     ///
     /// Returns immediately (non-blocking).  Call repeatedly from a loop.

@@ -208,6 +208,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
                     &config, &router, &mut recording_start, &mut last_voice_time,
                     silence_threshold,
                 );
+                monitor.reset(); // state machine back to Idle
             }
             // Silence auto-stop: only in toggle mode (PTT stops on key-up).
             else if is_toggle_recording {
@@ -224,6 +225,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
                             &config, &router, &mut recording_start, &mut last_voice_time,
                             silence_threshold,
                         );
+                        monitor.reset(); // state machine back to Idle
                     }
                 }
             }
