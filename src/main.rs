@@ -207,6 +207,15 @@ fn handle_event(
         HotkeyEvent::StopRecording => {
             on_stop_recording(audio, asr_engine, punctuator, config, router, recording_start);
         }
+        HotkeyEvent::CancelAndToggle => {
+            // Auto mode short press: discard tentative PTT recording,
+            // restart fresh for toggle mode.
+            log::info!("Auto short press — switching to toggle mode");
+            audio.stop_recording(); // discard
+            *recording_start = None;
+            // Start a new recording for toggle mode.
+            on_start_recording(audio, config, recording_start);
+        }
     }
 }
 

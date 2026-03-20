@@ -117,13 +117,14 @@ fn toggle_three_presses_cycle() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn auto_short_press_toggles_start() {
+fn auto_short_press_starts_then_cancels_to_toggle() {
     let mut sm = auto_sm();
     let now = Instant::now();
-    // Press for 100 ms (< 300 ms hold_delay).
-    sm.process(KeyAction::Down, at(now, 0));
-    let result = sm.process(KeyAction::Up, at(now, 100));
-    assert_eq!(result, Some(HotkeyEvent::StartRecording));
+    // Key down: StartRecording fires immediately.
+    assert_eq!(sm.process(KeyAction::Down, at(now, 0)), Some(HotkeyEvent::StartRecording));
+    // Key up before hold_delay (100 ms < 300 ms): CancelAndToggle.
+    // Main loop should discard tentative audio and restart in toggle mode.
+    assert_eq!(sm.process(KeyAction::Up, at(now, 100)), Some(HotkeyEvent::CancelAndToggle));
     // No tick-triggered event for a short press.
     assert_eq!(sm.tick(at(now, 400)), None);
 }
@@ -132,10 +133,10 @@ fn auto_short_press_toggles_start() {
 fn auto_short_press_second_stops() {
     let mut sm = auto_sm();
     let now = Instant::now();
-    // First short press: start recording.
+    // First short press: start then cancel-to-toggle.
     sm.process(KeyAction::Down, at(now, 0));
     sm.process(KeyAction::Up, at(now, 100));
-    // Second press: stop recording.
+    // Second press: stop recording (toggle off).
     let result = sm.process(KeyAction::Down, at(now, 600));
     assert_eq!(result, Some(HotkeyEvent::StopRecording));
 }
@@ -148,35 +149,34 @@ fn auto_short_press_second_stops() {
 fn auto_long_press_is_ptt() {
     let mut sm = auto_sm();
     let now = Instant::now();
-    // Key down at t=0; hold_delay is 300 ms.
-    assert_eq!(sm.process(KeyAction::Down, at(now, 0)), None);
-    // Tick at 400 ms: hold_delay elapsed → StartRecording fires, state → WaitingRelease.
-    assert_eq!(sm.tick(at(now, 400)), Some(HotkeyEvent::StartRecording));
+    // Key down at t=0: StartRecording fires immediately.
+    assert_eq!(sm.process(KeyAction::Down, at(now, 0)), Some(HotkeyEvent::StartRecording));
+    // Tick at 400 ms: hold_delay elapsed → commits to PTT (no new event).
+    assert_eq!(sm.tick(at(now, 400)), None);
     // Key-up: StopRecording fires.
     assert_eq!(sm.process(KeyAction::Up, at(now, 400)), Some(HotkeyEvent::StopRecording));
 }
 
 #[test]
 fn auto_long_press_exactly_at_boundary_is_ptt() {
-    // hold_delay == 300 ms; tick at exactly 300 ms should trigger PTT.
     let mut sm = auto_sm();
     let now = Instant::now();
-    assert_eq!(sm.process(KeyAction::Down, at(now, 0)), None);
-    // Tick at exactly 300 ms: duration_since == hold_delay → StartRecording.
-    assert_eq!(sm.tick(at(now, 300)), Some(HotkeyEvent::StartRecording));
+    // Key down: StartRecording immediately.
+    assert_eq!(sm.process(KeyAction::Down, at(now, 0)), Some(HotkeyEvent::StartRecording));
+    // Tick at exactly 300 ms: commits to PTT (no new event).
+    assert_eq!(sm.tick(at(now, 300)), None);
     assert_eq!(sm.process(KeyAction::Up, at(now, 300)), Some(HotkeyEvent::StopRecording));
 }
 
 #[test]
 fn auto_press_just_below_threshold_is_toggle() {
-    // 299 ms < 300 ms hold_delay → tick does not fire; key-up produces toggle start.
+    // 299 ms < 300 ms hold_delay → tick does not commit; key-up cancels to toggle.
     let mut sm = auto_sm();
     let now = Instant::now();
-    assert_eq!(sm.process(KeyAction::Down, at(now, 0)), None);
-    // Tick at 299 ms: hold_delay not yet elapsed → None.
+    assert_eq!(sm.process(KeyAction::Down, at(now, 0)), Some(HotkeyEvent::StartRecording));
     assert_eq!(sm.tick(at(now, 299)), None);
-    // Key released before hold_delay → short press → StartRecording (toggle).
-    assert_eq!(sm.process(KeyAction::Up, at(now, 299)), Some(HotkeyEvent::StartRecording));
+    // Key released before hold_delay → CancelAndToggle.
+    assert_eq!(sm.process(KeyAction::Up, at(now, 299)), Some(HotkeyEvent::CancelAndToggle));
 }
 
 // ---------------------------------------------------------------------------

@@ -18,8 +18,9 @@
 //! loop {
 //!     if let Some(event) = monitor.poll() {
 //!         match event {
-//!             HotkeyEvent::StartRecording => println!("start"),
-//!             HotkeyEvent::StopRecording  => println!("stop"),
+//!             HotkeyEvent::StartRecording  => println!("start"),
+//!             HotkeyEvent::StopRecording   => println!("stop"),
+//!             HotkeyEvent::CancelAndToggle => println!("cancel + toggle"),
 //!         }
 //!     }
 //! }
@@ -42,6 +43,9 @@ pub enum HotkeyEvent {
     StartRecording,
     /// The user wants to stop recording audio.
     StopRecording,
+    /// Auto-mode short press: cancel the tentative recording and toggle.
+    /// Main loop should stop recording, discard audio, then toggle state.
+    CancelAndToggle,
 }
 
 // ---------------------------------------------------------------------------
@@ -119,8 +123,9 @@ impl HotkeyStateMachine {
     /// Advance the state machine's time-based transitions.
     ///
     /// In Auto mode: if the key has been held for at least `hold_delay`,
-    /// transition to `WaitingRelease` and emit `StartRecording` so that
-    /// recording begins while the key is still physically held.
+    /// transition from `KeyDown` (tentative recording) to `WaitingRelease`
+    /// (confirmed PTT). This commits the recording so key-up will emit
+    /// `StopRecording` instead of discarding the audio.
     ///
     /// Call this on every poll iteration before processing device events.
     /// Returns `None` in all other modes or states.
@@ -130,8 +135,8 @@ impl HotkeyStateMachine {
         }
         if let HotkeyState::KeyDown { since } = self.state {
             if now.duration_since(since) >= self.hold_delay {
+                // Commit to PTT — recording was already started on key-down.
                 self.state = HotkeyState::WaitingRelease;
-                return Some(HotkeyEvent::StartRecording);
             }
         }
         None
@@ -175,27 +180,26 @@ impl HotkeyStateMachine {
 
     fn process_auto(&mut self, action: KeyAction, now: Instant) -> Option<HotkeyEvent> {
         match (&self.state, action) {
-            // Key goes down: start timing; don't emit yet.
+            // Key down from idle: start recording immediately, begin timing.
             (HotkeyState::Idle, KeyAction::Down) => {
                 self.state = HotkeyState::KeyDown { since: now };
-                None
-            }
-
-            // Key released while timing — short press (toggle): start recording.
-            // Long-press transitions are handled by tick(); if we reach here the
-            // hold_delay has not elapsed yet.
-            (HotkeyState::KeyDown { .. }, KeyAction::Up) => {
-                self.state = HotkeyState::Recording;
                 Some(HotkeyEvent::StartRecording)
             }
 
-            // Long-press PTT release: tick() moved us to WaitingRelease; now stop.
+            // Key released before hold_delay — short press: cancel tentative
+            // recording and enter toggle mode (Recording state).
+            (HotkeyState::KeyDown { .. }, KeyAction::Up) => {
+                self.state = HotkeyState::Recording;
+                Some(HotkeyEvent::CancelAndToggle)
+            }
+
+            // Long-press PTT release: tick() confirmed PTT; now stop normally.
             (HotkeyState::WaitingRelease, KeyAction::Up) => {
                 self.state = HotkeyState::Idle;
                 Some(HotkeyEvent::StopRecording)
             }
 
-            // Toggle stop: second press while already recording.
+            // Toggle stop: second press while recording in toggle mode.
             (HotkeyState::Recording, KeyAction::Down) => {
                 self.state = HotkeyState::Idle;
                 Some(HotkeyEvent::StopRecording)

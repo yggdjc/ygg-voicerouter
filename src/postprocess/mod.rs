@@ -29,7 +29,7 @@ pub mod punctuation;
 
 use crate::config::PostprocessConfig;
 use english_fix::fix_broken_english;
-use punctuation::{apply_punct_mode, half_to_fullwidth};
+use punctuation::{apply_punct_mode, half_to_fullwidth, space_cjk_ascii_boundary};
 
 /// Run the post-processing pipeline on `text` according to `config`.
 ///
@@ -64,10 +64,14 @@ use punctuation::{apply_punct_mode, half_to_fullwidth};
 /// ```
 #[must_use]
 pub fn postprocess(text: &str, config: &PostprocessConfig) -> String {
+    // Insert spaces at CJK/ASCII boundaries so downstream steps
+    // can tokenise English runs correctly (e.g. "了PTT模式" → "了 PTT 模式").
+    let spaced = space_cjk_ascii_boundary(text);
+
     let step1 = if config.fix_english {
-        fix_broken_english(text)
+        fix_broken_english(&spaced)
     } else {
-        text.to_owned()
+        spaced
     };
 
     let step2 = if config.fullwidth_punct {

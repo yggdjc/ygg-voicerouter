@@ -48,6 +48,48 @@ fn is_cjk_context(c: char) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// CJK / ASCII boundary spacing
+// ---------------------------------------------------------------------------
+
+/// Insert a space at every boundary between CJK and ASCII-letter runs.
+///
+/// ASR models (especially Paraformer) often glue Chinese and English together
+/// without spaces, e.g. `"了PTT模式"`.  This function normalises such text to
+/// `"了 PTT 模式"`, enabling downstream token-level processing such as
+/// acronym merging.
+///
+/// # Examples
+///
+/// ```
+/// use voicerouter::postprocess::punctuation::space_cjk_ascii_boundary;
+///
+/// assert_eq!(space_cjk_ascii_boundary("了PTT模式"), "了 PTT 模式");
+/// assert_eq!(space_cjk_ascii_boundary("Hello世界"), "Hello 世界");
+/// assert_eq!(space_cjk_ascii_boundary("纯中文"), "纯中文");
+/// assert_eq!(space_cjk_ascii_boundary("pure ascii"), "pure ascii");
+/// ```
+#[must_use]
+pub fn space_cjk_ascii_boundary(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut output = String::with_capacity(text.len() + 8);
+
+    for (i, &c) in chars.iter().enumerate() {
+        if i > 0 {
+            let prev = chars[i - 1];
+            let need_space =
+                (is_cjk_context(prev) && c.is_ascii_alphanumeric())
+                || (prev.is_ascii_alphanumeric() && is_cjk_context(c));
+            if need_space {
+                output.push(' ');
+            }
+        }
+        output.push(c);
+    }
+
+    output
+}
+
+// ---------------------------------------------------------------------------
 // Punct mapping
 // ---------------------------------------------------------------------------
 
