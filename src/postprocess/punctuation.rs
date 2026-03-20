@@ -157,6 +157,9 @@ pub fn half_to_fullwidth(text: &str) -> String {
 /// Convert fullwidth punctuation back to half-width when both neighbours are
 /// ASCII (i.e. the punctuation is inside an English context).
 ///
+/// Also normalises spacing: removes the space *before* the punctuation and
+/// ensures a space *after* it (English typographic convention: `"test. next"`).
+///
 /// This is the reverse of [`half_to_fullwidth`] and is needed because
 /// ct-punc outputs fullwidth punctuation regardless of language context.
 ///
@@ -165,9 +168,10 @@ pub fn half_to_fullwidth(text: &str) -> String {
 /// ```
 /// use voicerouter::postprocess::punctuation::fullwidth_to_half_in_ascii;
 ///
-/// assert_eq!(fullwidth_to_half_in_ascii("apple，banana"), "apple,banana");
+/// assert_eq!(fullwidth_to_half_in_ascii("test 。 next"), "test. next");
+/// assert_eq!(fullwidth_to_half_in_ascii("apple，banana"), "apple, banana");
 /// assert_eq!(fullwidth_to_half_in_ascii("你好，世界"), "你好，世界");
-/// assert_eq!(fullwidth_to_half_in_ascii("hello。world"), "hello.world");
+/// assert_eq!(fullwidth_to_half_in_ascii("hello。world"), "hello. world");
 /// assert_eq!(fullwidth_to_half_in_ascii("test， next"), "test, next");
 /// ```
 #[must_use]
@@ -175,23 +179,38 @@ pub fn fullwidth_to_half_in_ascii(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut output = String::with_capacity(text.len());
 
-    for (i, &c) in chars.iter().enumerate() {
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
         if let Some(hw) = to_halfwidth(c) {
-            let prev_is_ascii = i == 0
-                || chars[i - 1].is_ascii_alphanumeric()
-                || chars[i - 1].is_ascii_whitespace();
-            let next_is_ascii = i + 1 >= chars.len()
-                || chars[i + 1].is_ascii_alphanumeric()
-                || chars[i + 1].is_ascii_whitespace();
+            // Look past optional space before punct to find the real prev char.
+            let prev_is_ascii = i == 0 || {
+                let pi = if i >= 2 && chars[i - 1] == ' ' { i - 2 } else { i - 1 };
+                chars[pi].is_ascii_alphanumeric() || chars[pi].is_ascii_whitespace()
+            };
+            // Look past optional space after punct.
+            let next_idx = if i + 1 < chars.len() && chars[i + 1] == ' ' { i + 2 } else { i + 1 };
+            let next_is_ascii = next_idx >= chars.len()
+                || chars[next_idx].is_ascii_alphanumeric()
+                || chars[next_idx].is_ascii_whitespace();
 
             if prev_is_ascii && next_is_ascii {
+                // Remove trailing space before punct (e.g. "test " → "test").
+                if output.ends_with(' ') {
+                    output.pop();
+                }
                 output.push(hw);
+                // Ensure space after punct (unless at end or next is already space).
+                if i + 1 < chars.len() && chars[i + 1] != ' ' {
+                    output.push(' ');
+                }
             } else {
                 output.push(c);
             }
         } else {
             output.push(c);
         }
+        i += 1;
     }
 
     output
