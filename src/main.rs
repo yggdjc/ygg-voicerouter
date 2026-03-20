@@ -372,9 +372,8 @@ fn on_stop_recording(
 
 /// Record 1 second of ambient noise and derive a silence threshold.
 ///
-/// Returns `max(ambient_rms * 2.5, config.silence_threshold)` so the
-/// threshold adapts to the current environment but never drops below the
-/// configured floor.
+/// Returns `clamp(ambient_rms * 1.5, floor, ceiling)` so the threshold
+/// adapts to the current environment but stays within sane bounds.
 fn calibrate_silence(audio: &mut AudioPipeline, config: &Config) -> f32 {
     let floor = config.audio.silence_threshold as f32;
 
@@ -393,7 +392,10 @@ fn calibrate_silence(audio: &mut AudioPipeline, config: &Config) -> f32 {
 
     let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
     let ambient_rms = (sum_sq / samples.len() as f32).sqrt();
-    let threshold = (ambient_rms * 2.5).max(floor);
+    // Ceiling prevents threshold from being too high when calibration
+    // picks up transient noise (keyboard clicks, etc.).
+    let ceiling = 0.02_f32;
+    let threshold = (ambient_rms * 1.5).clamp(floor, ceiling);
 
     log::info!(
         "ambient RMS: {ambient_rms:.4}, silence threshold: {threshold:.4} (floor: {floor})"
