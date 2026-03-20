@@ -5,13 +5,13 @@
 //!
 //! # Examples
 //!
-//! ```
+//! ```no_run
 //! use voicerouter::config::Config;
 //! use voicerouter::router::Router;
 //!
 //! let config = Config::default();
 //! let router = Router::new(&config);
-//! // No rules → default inject handler receives full text (stubbed).
+//! // No rules → default inject handler forwards text to the focused window.
 //! router.dispatch("hello world").unwrap();
 //! ```
 

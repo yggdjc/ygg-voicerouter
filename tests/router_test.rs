@@ -164,14 +164,15 @@ fn test_non_matching_text_goes_to_default() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "requires a real Wayland/X11 session with wl-copy, ydotool, or xdotool"]
 fn real_router_no_rules_dispatches_to_inject_stub() {
     let config = Config::default();
     let router = Router::new(&config);
-    // InjectHandler is a stub that logs — should not error.
     router.dispatch("hello world").unwrap();
 }
 
 #[test]
+#[ignore = "requires a real Wayland/X11 session with wl-copy, ydotool, or xdotool"]
 fn real_router_inject_rule_dispatches() {
     let config = Config {
         router: RouterConfig {
@@ -203,6 +204,7 @@ fn real_router_shell_rule_executes_echo() {
 }
 
 #[test]
+#[ignore = "requires a real Wayland/X11 session with wl-copy, ydotool, or xdotool"]
 fn real_router_unknown_handler_falls_back_to_inject() {
     let config = Config {
         router: RouterConfig {
@@ -214,11 +216,11 @@ fn real_router_unknown_handler_falls_back_to_inject() {
         ..Config::default()
     };
     let router = Router::new(&config);
-    // Should not panic or error — falls back to inject stub.
     router.dispatch("x some text").unwrap();
 }
 
 #[test]
+#[ignore = "requires a real Wayland/X11 session with wtype"]
 fn real_router_inject_method_propagated() {
     let config = Config {
         inject: voicerouter::config::InjectConfig { method: InjectMethod::Wtype },
