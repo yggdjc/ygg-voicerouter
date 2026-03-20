@@ -25,10 +25,12 @@
 //! ```
 
 pub mod english_fix;
+pub mod filler;
 pub mod punctuation;
 
 use crate::config::PostprocessConfig;
 use english_fix::fix_broken_english;
+use filler::remove_fillers;
 use punctuation::{
     apply_punct_mode, fullwidth_to_half_in_ascii, half_to_fullwidth, space_cjk_ascii_boundary,
 };
@@ -66,9 +68,12 @@ use punctuation::{
 /// ```
 #[must_use]
 pub fn postprocess(text: &str, config: &PostprocessConfig) -> String {
+    // Remove Chinese filler words (嗯、呃、啊 as hesitation).
+    let defilled = remove_fillers(text);
+
     // Insert spaces at CJK/ASCII boundaries so downstream steps
     // can tokenise English runs correctly (e.g. "了PTT模式" → "了 PTT 模式").
-    let spaced = space_cjk_ascii_boundary(text);
+    let spaced = space_cjk_ascii_boundary(&defilled);
 
     let step1 = if config.fix_english {
         fix_broken_english(&spaced)
