@@ -181,6 +181,8 @@ pub fn half_to_fullwidth(text: &str) -> String {
 /// assert_eq!(fullwidth_to_half_in_ascii("你好，世界"), "你好，世界");
 /// assert_eq!(fullwidth_to_half_in_ascii("hello。world"), "hello. world");
 /// assert_eq!(fullwidth_to_half_in_ascii("test， next"), "test, next");
+/// // Punct after English, before Chinese → still halfwidth (follows English).
+/// assert_eq!(fullwidth_to_half_in_ascii("sentence。这也是"), "sentence.这也是");
 /// ```
 #[must_use]
 pub fn fullwidth_to_half_in_ascii(text: &str) -> String {
@@ -191,25 +193,24 @@ pub fn fullwidth_to_half_in_ascii(text: &str) -> String {
     while i < chars.len() {
         let c = chars[i];
         if let Some(hw) = to_halfwidth(c) {
-            // Look past optional space before punct to find the real prev char.
+            // Punctuation belongs to the language of the *preceding* text.
+            // If the previous non-space character is ASCII, convert to halfwidth.
             let prev_is_ascii = i == 0 || {
                 let pi = if i >= 2 && chars[i - 1] == ' ' { i - 2 } else { i - 1 };
                 chars[pi].is_ascii_alphanumeric() || chars[pi].is_ascii_whitespace()
             };
-            // Look past optional space after punct.
-            let next_idx = if i + 1 < chars.len() && chars[i + 1] == ' ' { i + 2 } else { i + 1 };
-            let next_is_ascii = next_idx >= chars.len()
-                || chars[next_idx].is_ascii_alphanumeric()
-                || chars[next_idx].is_ascii_whitespace();
 
-            if prev_is_ascii && next_is_ascii {
+            if prev_is_ascii {
                 // Remove trailing space before punct (e.g. "test " → "test").
                 if output.ends_with(' ') {
                     output.pop();
                 }
                 output.push(hw);
-                // Ensure space after punct (unless at end or next is already space).
-                if i + 1 < chars.len() && chars[i + 1] != ' ' {
+                // Add space after punct only if next char is ASCII alphanumeric
+                // (English convention). Don't add before CJK or existing space.
+                if i + 1 < chars.len()
+                    && chars[i + 1].is_ascii_alphanumeric()
+                {
                     output.push(' ');
                 }
             } else {
