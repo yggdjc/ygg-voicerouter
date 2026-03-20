@@ -1,0 +1,33 @@
+[hotkey]
+key = "KEY_RIGHTALT"
+mode = "auto"           # ptt | toggle | auto
+hold_delay = 0.3
+
+[audio]
+sample_rate = 16000
+channels = 1
+silence_threshold = 0.01
+silence_duration = 1.5
+max_record_seconds = 30
+denoise = true
+
+[asr]
+model = "paraformer-zh"
+model_dir = "~/.cache/voicerouter/models"
+streaming = true
+
+[postprocess]
+punct_mode = "strip_trailing"
+fullwidth_punct = true
+fix_english = true
+
+[inject]
+method = "auto"
+
+[router]
+
+[llm]
+enabled = false
+
+[sound]
+feedback = true

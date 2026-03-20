@@ -1,0 +1,25 @@
+[package]
+name = "voicerouter"
+version = "0.1.0"
+edition = "2021"
+description = "Voice router for Linux — offline ASR with pluggable handlers"
+license = "MIT"
+
+[dependencies]
+sherpa-rs = "0.6"
+cpal = "0.15"
+evdev = "0.12"
+nnnoiseless = "0.3"
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+hound = "3.5"
+dirs = "5"
+
+[dev-dependencies]
+tempfile = "3"
