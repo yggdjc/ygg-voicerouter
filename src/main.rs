@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 
 use voicerouter::asr::AsrEngine;
 use voicerouter::audio::AudioPipeline;
-use voicerouter::config::Config;
+use voicerouter::config::{Config, HotkeyMode};
 use voicerouter::hotkey::{HotkeyEvent, HotkeyMonitor};
 use voicerouter::postprocess::postprocess;
 use voicerouter::router::Router;
@@ -174,6 +174,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
 
     let mut recording_start: Option<Instant> = None;
     let mut last_voice_time: Option<Instant> = None; // last time RMS > threshold
+    let mut is_toggle_recording = false; // true when in toggle mode (silence auto-stop applies)
 
     log::info!("ready — listening for hotkey '{}'", config.hotkey.key);
 
@@ -188,6 +189,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
                 &router,
                 &mut recording_start,
                 &mut last_voice_time,
+                &mut is_toggle_recording,
                 silence_threshold,
             );
         }
@@ -197,37 +199,36 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
             let elapsed = start.elapsed().as_secs_f32();
             let max_secs = config.audio.max_record_seconds as f32;
 
-            // Max duration exceeded.
-            if elapsed >= max_secs {
+            // Max duration exceeded (toggle mode only; PTT ends on key-up).
+            if is_toggle_recording && elapsed >= max_secs {
                 log::info!("max recording duration ({max_secs}s) reached, auto-stopping");
+                is_toggle_recording = false;
                 on_stop_recording(
                     &mut audio, &mut asr_engine, &mut punctuator,
                     &config, &router, &mut recording_start, &mut last_voice_time,
                     silence_threshold,
                 );
             }
-            // Silence auto-stop: if no voice detected for silence_duration.
-            else if let Some(last_voice) = last_voice_time {
-                let silence_secs = last_voice.elapsed().as_secs_f64();
-                if silence_secs >= config.audio.silence_duration {
-                    log::info!(
-                        "silence for {:.1}s (threshold {:.1}s), auto-stopping",
-                        silence_secs, config.audio.silence_duration
-                    );
-                    on_stop_recording(
-                        &mut audio, &mut asr_engine, &mut punctuator,
-                        &config, &router, &mut recording_start, &mut last_voice_time,
-                        silence_threshold,
-                    );
+            // Silence auto-stop: only in toggle mode (PTT stops on key-up).
+            else if is_toggle_recording {
+                if let Some(last_voice) = last_voice_time {
+                    let silence_secs = last_voice.elapsed().as_secs_f64();
+                    if silence_secs >= config.audio.silence_duration {
+                        log::info!(
+                            "silence for {:.1}s (threshold {:.1}s), auto-stopping",
+                            silence_secs, config.audio.silence_duration
+                        );
+                        is_toggle_recording = false;
+                        on_stop_recording(
+                            &mut audio, &mut asr_engine, &mut punctuator,
+                            &config, &router, &mut recording_start, &mut last_voice_time,
+                            silence_threshold,
+                        );
+                    }
                 }
             }
             // Update voice activity tracking.
-            else if audio.rms() > silence_threshold {
-                last_voice_time = Some(Instant::now());
-            }
-
-            // Continuously track voice activity while recording.
-            if recording_start.is_some() && audio.rms() > silence_threshold {
+            if audio.rms() > silence_threshold {
                 last_voice_time = Some(Instant::now());
             }
         }
@@ -249,14 +250,18 @@ fn handle_event(
     router: &Router,
     recording_start: &mut Option<Instant>,
     last_voice_time: &mut Option<Instant>,
+    is_toggle: &mut bool,
     silence_threshold: f32,
 ) {
     match event {
         HotkeyEvent::StartRecording => {
             on_start_recording(audio, config, recording_start);
-            *last_voice_time = None; // reset; will be set when voice detected
+            *last_voice_time = None;
+            // Pure toggle mode also gets silence auto-stop.
+            *is_toggle = config.hotkey.mode == HotkeyMode::Toggle;
         }
         HotkeyEvent::StopRecording => {
+            *is_toggle = false;
             on_stop_recording(audio, asr_engine, punctuator, config, router, recording_start, last_voice_time, silence_threshold);
         }
         HotkeyEvent::CancelAndToggle => {
@@ -270,6 +275,7 @@ fn handle_event(
             }
             *recording_start = Some(Instant::now());
             *last_voice_time = None;
+            *is_toggle = true;
         }
     }
 }
