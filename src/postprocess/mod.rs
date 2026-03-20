@@ -26,11 +26,13 @@
 
 pub mod english_fix;
 pub mod filler;
+pub mod number;
 pub mod punctuation;
 
 use crate::config::PostprocessConfig;
 use english_fix::fix_broken_english;
 use filler::remove_fillers;
+use number::normalize_numbers;
 use punctuation::{
     apply_punct_mode, fullwidth_to_half_in_ascii, half_to_fullwidth, space_cjk_ascii_boundary,
 };
@@ -71,9 +73,12 @@ pub fn postprocess(text: &str, config: &PostprocessConfig) -> String {
     // Remove Chinese filler words (嗯、呃、啊 as hesitation).
     let defilled = remove_fillers(text);
 
+    // Convert Chinese numbers to Arabic digits (ITN).
+    let numbered = normalize_numbers(&defilled);
+
     // Insert spaces at CJK/ASCII boundaries so downstream steps
     // can tokenise English runs correctly (e.g. "了PTT模式" → "了 PTT 模式").
-    let spaced = space_cjk_ascii_boundary(&defilled);
+    let spaced = space_cjk_ascii_boundary(&numbered);
 
     let step1 = if config.fix_english {
         fix_broken_english(&spaced)

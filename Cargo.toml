@@ -21,6 +21,7 @@ hound = "3.5"
 dirs = "5"
 libc = "0.2"
 ctrlc = "3"
+chinese-number = "0.7.8"
 
 [dev-dependencies]
 tempfile = "3"
