@@ -110,17 +110,31 @@ pub fn detect_method() -> InjectMethod {
 
 /// Inject text via clipboard: save → copy → paste keystroke → restore.
 pub fn clipboard_paste(text: &str) -> Result<()> {
-    // 1. Copy text to clipboard.
+    // 1. Save current clipboard (best-effort).
+    let saved = read_clipboard().unwrap_or_default();
+
+    // 2. Copy text to clipboard.
     write_clipboard(text).context("clipboard_paste: failed to write text to clipboard")?;
 
-    // 2. Small delay to ensure clipboard daemon is fully serving.
+    // 3. Small delay to ensure clipboard daemon is fully serving.
     thread::sleep(Duration::from_millis(50));
 
-    // 3. Simulate Ctrl+V.
+    // 4. Simulate Ctrl+V.
     send_paste_key().context("clipboard_paste: failed to send paste keystroke")?;
 
-    // 4. Wait for target app to process the paste event.
-    thread::sleep(Duration::from_millis(100));
+    // 5. Restore clipboard in background thread after a delay, so it doesn't
+    //    block the main loop or race with the next injection.
+    if !saved.is_empty() {
+        std::thread::Builder::new()
+            .name("clipboard-restore".to_owned())
+            .spawn(move || {
+                thread::sleep(Duration::from_millis(500));
+                if let Err(e) = write_clipboard(&saved) {
+                    log::warn!("clipboard restore failed: {e}");
+                }
+            })
+            .ok();
+    }
 
     Ok(())
 }
