@@ -61,7 +61,7 @@ struct AssistantMessage {
 /// use voicerouter::router::handlers::llm::LlmHandler;
 ///
 /// // Reads LLM_BASE_URL, LLM_MODEL, LLM_API_KEY from environment.
-/// let handler = LlmHandler::from_env();
+/// let handler = LlmHandler::from_env().unwrap();
 /// assert_eq!(handler.name(), "llm");
 /// ```
 pub struct LlmHandler {
@@ -76,20 +76,27 @@ impl LlmHandler {
     ///
     /// - `LLM_BASE_URL` — API base URL (default: `https://api.openai.com/v1`)
     /// - `LLM_MODEL`    — model identifier (default: `gpt-4o-mini`)
-    /// - `LLM_API_KEY`  — bearer token (default: empty string)
-    #[must_use]
-    pub fn from_env() -> Self {
+    /// - `LLM_API_KEY`  — bearer token (default: empty string; a warning is
+    ///   logged when missing or empty)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP client cannot be built (e.g. invalid TLS
+    /// configuration).
+    pub fn from_env() -> Result<Self> {
         let base_url = std::env::var("LLM_BASE_URL")
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_owned());
         let model =
             std::env::var("LLM_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_owned());
         let api_key = std::env::var("LLM_API_KEY").unwrap_or_default();
-        Self {
-            base_url,
-            model,
-            api_key,
-            client: reqwest::blocking::Client::new(),
+        if api_key.is_empty() {
+            log::warn!("LLM_API_KEY not set — LLM handler will fail at runtime");
         }
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .context("failed to build LLM HTTP client")?;
+        Ok(Self { base_url, model, api_key, client })
     }
 
     fn chat_url(&self) -> String {

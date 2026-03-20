@@ -5,6 +5,14 @@
 /// Implementations must be `Send + Sync` so that the owning [`Router`] can be
 /// used from multiple threads or across `async` await points.
 ///
+/// # Design note: synchronous interface
+///
+/// This trait is intentionally synchronous. The main event loop is a blocking
+/// thread and blocking I/O is acceptable here. Callers running inside an async
+/// runtime must not call `handle` on the runtime thread directly; use
+/// [`tokio::task::spawn_blocking`] (or the equivalent for your executor) to
+/// drive a handler without stalling the executor.
+///
 /// [`Router`]: crate::router::Router
 ///
 /// # Examples

@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! use voicerouter::config::{Config, InjectMethod, RouterConfig};
+//! use voicerouter::config::Config;
 //! use voicerouter::router::Router;
 //!
 //! let config = Config::default();
@@ -21,7 +21,7 @@ pub mod handlers;
 use anyhow::Result;
 use log::warn;
 
-use crate::config::{Config, InjectMethod};
+use crate::config::Config;
 use handler::Handler;
 use handlers::{inject::InjectHandler, llm::LlmHandler, shell::ShellHandler};
 
@@ -71,9 +71,18 @@ impl Router {
             .router
             .rules
             .iter()
-            .map(|r| Rule {
-                trigger: r.trigger.clone(),
-                handler: build_handler(&r.handler, config.inject.method),
+            .filter_map(|r| {
+                if r.handler == "llm" && !config.llm.enabled {
+                    warn!(
+                        "[router] rule {:?} specifies handler=\"llm\" but llm.enabled=false — skipping",
+                        r.trigger
+                    );
+                    return None;
+                }
+                Some(Rule {
+                    trigger: r.trigger.clone(),
+                    handler: build_handler(&r.handler, config),
+                })
             })
             .collect();
 
@@ -113,10 +122,17 @@ impl Router {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-fn build_handler(name: &str, inject_method: InjectMethod) -> Box<dyn Handler> {
+fn build_handler(name: &str, config: &Config) -> Box<dyn Handler> {
+    let inject_method = config.inject.method;
     match name {
         "inject" => Box::new(InjectHandler::new(inject_method)),
-        "llm" => Box::new(LlmHandler::from_env()),
+        "llm" => match LlmHandler::from_env() {
+            Ok(h) => Box::new(h),
+            Err(e) => {
+                warn!("[router] failed to build LLM handler ({e:#}), falling back to inject");
+                Box::new(InjectHandler::new(inject_method))
+            }
+        },
         "shell" => Box::new(ShellHandler::new()),
         other => {
             warn!(
