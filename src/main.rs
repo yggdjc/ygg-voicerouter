@@ -173,6 +173,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     let mut punctuator: Option<sherpa_rs::punctuate::Punctuation> = None;
 
     let mut recording_start: Option<Instant> = None;
+    let mut last_voice_time: Option<Instant> = None; // last time RMS > threshold
 
     log::info!("ready — listening for hotkey '{}'", config.hotkey.key);
 
@@ -186,9 +187,51 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
                 &config,
                 &router,
                 &mut recording_start,
+                &mut last_voice_time,
                 silence_threshold,
             );
         }
+
+        // While recording: check for silence auto-stop and max duration.
+        if let Some(start) = recording_start {
+            let elapsed = start.elapsed().as_secs_f32();
+            let max_secs = config.audio.max_record_seconds as f32;
+
+            // Max duration exceeded.
+            if elapsed >= max_secs {
+                log::info!("max recording duration ({max_secs}s) reached, auto-stopping");
+                on_stop_recording(
+                    &mut audio, &mut asr_engine, &mut punctuator,
+                    &config, &router, &mut recording_start, &mut last_voice_time,
+                    silence_threshold,
+                );
+            }
+            // Silence auto-stop: if no voice detected for silence_duration.
+            else if let Some(last_voice) = last_voice_time {
+                let silence_secs = last_voice.elapsed().as_secs_f64();
+                if silence_secs >= config.audio.silence_duration {
+                    log::info!(
+                        "silence for {:.1}s (threshold {:.1}s), auto-stopping",
+                        silence_secs, config.audio.silence_duration
+                    );
+                    on_stop_recording(
+                        &mut audio, &mut asr_engine, &mut punctuator,
+                        &config, &router, &mut recording_start, &mut last_voice_time,
+                        silence_threshold,
+                    );
+                }
+            }
+            // Update voice activity tracking.
+            else if audio.rms() > silence_threshold {
+                last_voice_time = Some(Instant::now());
+            }
+
+            // Continuously track voice activity while recording.
+            if recording_start.is_some() && audio.rms() > silence_threshold {
+                last_voice_time = Some(Instant::now());
+            }
+        }
+
         std::thread::sleep(Duration::from_millis(10));
     }
 
@@ -205,12 +248,16 @@ fn handle_event(
     config: &Config,
     router: &Router,
     recording_start: &mut Option<Instant>,
+    last_voice_time: &mut Option<Instant>,
     silence_threshold: f32,
 ) {
     match event {
-        HotkeyEvent::StartRecording => on_start_recording(audio, config, recording_start),
+        HotkeyEvent::StartRecording => {
+            on_start_recording(audio, config, recording_start);
+            *last_voice_time = None; // reset; will be set when voice detected
+        }
         HotkeyEvent::StopRecording => {
-            on_stop_recording(audio, asr_engine, punctuator, config, router, recording_start, silence_threshold);
+            on_stop_recording(audio, asr_engine, punctuator, config, router, recording_start, last_voice_time, silence_threshold);
         }
         HotkeyEvent::CancelAndToggle => {
             // Auto mode short press: discard tentative PTT recording,
@@ -222,6 +269,7 @@ fn handle_event(
                 return;
             }
             *recording_start = Some(Instant::now());
+            *last_voice_time = None;
         }
     }
 }
@@ -256,9 +304,11 @@ fn on_stop_recording(
     config: &Config,
     router: &Router,
     recording_start: &mut Option<Instant>,
+    last_voice_time: &mut Option<Instant>,
     silence_threshold: f32,
 ) {
     let elapsed = recording_start.take().map_or(0.0, |t| t.elapsed().as_secs_f32());
+    *last_voice_time = None;
     log::info!("Recording stopped ({elapsed:.1}s)");
 
     // Play done beep immediately on key-up, before processing.
