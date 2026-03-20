@@ -400,7 +400,7 @@ fn calibrate_silence(audio: &mut AudioPipeline, config: &Config) -> f32 {
     let ambient_rms = (sum_sq / samples.len() as f32).sqrt();
     // Ceiling prevents threshold from being too high when calibration
     // picks up transient noise (keyboard clicks, etc.).
-    let ceiling = 0.02_f32;
+    let ceiling = 0.015_f32;
     let threshold = (ambient_rms * 1.5).clamp(floor, ceiling);
 
     log::info!(

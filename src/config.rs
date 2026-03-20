@@ -109,7 +109,7 @@ impl Default for AudioConfig {
         Self {
             sample_rate: 16000,
             channels: 1,
-            silence_threshold: 0.012,
+            silence_threshold: 0.008,
             silence_duration: 3.0,
             max_record_seconds: 60,
             denoise: true,
