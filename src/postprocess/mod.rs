@@ -29,7 +29,9 @@ pub mod punctuation;
 
 use crate::config::PostprocessConfig;
 use english_fix::fix_broken_english;
-use punctuation::{apply_punct_mode, half_to_fullwidth, space_cjk_ascii_boundary};
+use punctuation::{
+    apply_punct_mode, fullwidth_to_half_in_ascii, half_to_fullwidth, space_cjk_ascii_boundary,
+};
 
 /// Run the post-processing pipeline on `text` according to `config`.
 ///
@@ -74,10 +76,14 @@ pub fn postprocess(text: &str, config: &PostprocessConfig) -> String {
         spaced
     };
 
+    // Convert fullwidth punct in ASCII context back to half-width
+    // (ct-punc outputs fullwidth regardless of language).
+    let step1b = fullwidth_to_half_in_ascii(&step1);
+
     let step2 = if config.fullwidth_punct {
-        half_to_fullwidth(&step1)
+        half_to_fullwidth(&step1b)
     } else {
-        step1
+        step1b
     };
 
     apply_punct_mode(&step2, config.punct_mode)

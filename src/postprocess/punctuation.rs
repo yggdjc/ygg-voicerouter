@@ -154,6 +154,64 @@ pub fn half_to_fullwidth(text: &str) -> String {
     output
 }
 
+/// Convert fullwidth punctuation back to half-width when both neighbours are
+/// ASCII (i.e. the punctuation is inside an English context).
+///
+/// This is the reverse of [`half_to_fullwidth`] and is needed because
+/// ct-punc outputs fullwidth punctuation regardless of language context.
+///
+/// # Examples
+///
+/// ```
+/// use voicerouter::postprocess::punctuation::fullwidth_to_half_in_ascii;
+///
+/// assert_eq!(fullwidth_to_half_in_ascii("apple，banana"), "apple,banana");
+/// assert_eq!(fullwidth_to_half_in_ascii("你好，世界"), "你好，世界");
+/// assert_eq!(fullwidth_to_half_in_ascii("hello。world"), "hello.world");
+/// assert_eq!(fullwidth_to_half_in_ascii("test， next"), "test, next");
+/// ```
+#[must_use]
+pub fn fullwidth_to_half_in_ascii(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut output = String::with_capacity(text.len());
+
+    for (i, &c) in chars.iter().enumerate() {
+        if let Some(hw) = to_halfwidth(c) {
+            let prev_is_ascii = i == 0
+                || chars[i - 1].is_ascii_alphanumeric()
+                || chars[i - 1].is_ascii_whitespace();
+            let next_is_ascii = i + 1 >= chars.len()
+                || chars[i + 1].is_ascii_alphanumeric()
+                || chars[i + 1].is_ascii_whitespace();
+
+            if prev_is_ascii && next_is_ascii {
+                output.push(hw);
+            } else {
+                output.push(c);
+            }
+        } else {
+            output.push(c);
+        }
+    }
+
+    output
+}
+
+/// Maps a fullwidth punctuation character to its half-width equivalent.
+fn to_halfwidth(c: char) -> Option<char> {
+    match c {
+        '，' => Some(','),
+        '。' => Some('.'),
+        '：' => Some(':'),
+        '；' => Some(';'),
+        '？' => Some('?'),
+        '！' => Some('!'),
+        '（' => Some('('),
+        '）' => Some(')'),
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Trailing punctuation set
 // ---------------------------------------------------------------------------

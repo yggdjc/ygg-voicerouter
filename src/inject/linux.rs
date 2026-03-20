@@ -110,23 +110,17 @@ pub fn detect_method() -> InjectMethod {
 
 /// Inject text via clipboard: save → copy → paste keystroke → restore.
 pub fn clipboard_paste(text: &str) -> Result<()> {
-    // 1. Save current clipboard content (best-effort; empty string on failure).
-    let saved = read_clipboard().unwrap_or_default();
-
-    // 2. Copy new text to clipboard.
+    // 1. Copy text to clipboard.
     write_clipboard(text).context("clipboard_paste: failed to write text to clipboard")?;
+
+    // 2. Small delay to ensure clipboard daemon is fully serving.
+    thread::sleep(Duration::from_millis(50));
 
     // 3. Simulate Ctrl+V.
     send_paste_key().context("clipboard_paste: failed to send paste keystroke")?;
 
-    // 4. Wait for the target app to process the paste before restoring the
-    //    clipboard.  500 ms covers slow Electron apps.
-    thread::sleep(Duration::from_millis(500));
-
-    // 5. Restore original clipboard content (best-effort).
-    if let Err(e) = write_clipboard(&saved) {
-        log::warn!("clipboard_paste: could not restore clipboard: {e}");
-    }
+    // 4. Wait for target app to process the paste event.
+    thread::sleep(Duration::from_millis(100));
 
     Ok(())
 }
@@ -163,27 +157,17 @@ fn read_clipboard() -> Result<String> {
 /// Write `text` to the clipboard using the best available tool.
 fn write_clipboard(text: &str) -> Result<()> {
     if is_command_available("wl-copy") {
-        // Write text via stdin pipe.  wl-copy forks a background daemon to
-        // serve the clipboard; the parent exits once the daemon is ready,
-        // so waiting for the child guarantees the clipboard is set.
-        use std::io::Write as _;
-        use std::process::{Command, Stdio};
-        let mut child = Command::new("wl-copy")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .context("write_clipboard: failed to spawn wl-copy")?;
-        if let Some(ref mut stdin) = child.stdin {
-            stdin
-                .write_all(text.as_bytes())
-                .context("write_clipboard: failed to write to wl-copy stdin")?;
+        // Pass text as argument (same as Python voice-input).
+        // wl-copy forks a daemon; parent exits once daemon is ready.
+        // "--" prevents text starting with "-" from being parsed as flags.
+        use std::process::Command;
+        let status = Command::new("wl-copy")
+            .args(["--", text])
+            .status()
+            .context("write_clipboard: failed to run wl-copy")?;
+        if !status.success() {
+            bail!("write_clipboard: wl-copy exited with {status}");
         }
-        // Drop stdin so wl-copy sees EOF and finishes setup.
-        drop(child.stdin.take());
-        child
-            .wait()
-            .context("write_clipboard: wl-copy failed")?;
         return Ok(());
     }
     if is_command_available("xclip") {

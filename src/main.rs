@@ -209,12 +209,14 @@ fn handle_event(
         }
         HotkeyEvent::CancelAndToggle => {
             // Auto mode short press: discard tentative PTT recording,
-            // restart fresh for toggle mode.
+            // silently restart for toggle mode (no second beep).
             log::info!("Auto short press — switching to toggle mode");
             audio.stop_recording(); // discard
-            *recording_start = None;
-            // Start a new recording for toggle mode.
-            on_start_recording(audio, config, recording_start);
+            if let Err(e) = audio.start_recording() {
+                log::error!("failed to restart recording for toggle: {e:#}");
+                return;
+            }
+            *recording_start = Some(Instant::now());
         }
     }
 }
@@ -241,8 +243,6 @@ fn on_start_recording(
 /// Minimum recording duration in seconds — shorter clips are discarded.
 const MIN_RECORDING_SECS: f32 = 0.3;
 
-/// RMS amplitude below which a recording is considered silence and discarded.
-const SILENCE_RMS_THRESHOLD: f32 = 0.005;
 
 fn on_stop_recording(
     audio: &mut AudioPipeline,
@@ -278,8 +278,9 @@ fn on_stop_recording(
         let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
         (sum_sq / samples.len() as f32).sqrt()
     };
-    if rms < SILENCE_RMS_THRESHOLD {
-        log::info!("recording is silence (RMS {rms:.4} < {SILENCE_RMS_THRESHOLD}), discarding");
+    let threshold = config.audio.silence_threshold as f32;
+    if rms < threshold {
+        log::info!("recording is silence (RMS {rms:.4} < {threshold}), discarding");
         return;
     }
 
