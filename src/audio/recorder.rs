@@ -40,21 +40,18 @@ impl SharedBuffer {
     }
 
     fn rms(&self) -> f32 {
-        let sum_sq: f32 = self.rms_window.iter().map(|x| x * x).sum();
-        (sum_sq / RMS_WINDOW as f32).sqrt()
+        super::compute_rms(&self.rms_window)
     }
 }
 
 /// Captures audio from the default input device.
 ///
 /// The actual sample rate used may differ from the requested rate when the
-/// device does not support it — check [`AudioRecorder::actual_sample_rate`].
+/// device does not support it.
 pub struct AudioRecorder {
     device_name: String,
     /// The stream config that was negotiated with the device.
     stream_config: StreamConfig,
-    /// The sample rate that the device is actually delivering.
-    pub actual_sample_rate: u32,
     shared: Arc<Mutex<SharedBuffer>>,
     /// Live cpal stream; kept here so it is not dropped while recording.
     stream: Option<Stream>,
@@ -125,11 +122,9 @@ impl AudioRecorder {
             supported.sample_format(),
         );
 
-        let actual_sample_rate = stream_config.sample_rate.0;
         Ok(Self {
             device_name,
             stream_config,
-            actual_sample_rate,
             shared: Arc::new(Mutex::new(SharedBuffer::new())),
             stream: None,
             recording: false,
@@ -208,8 +203,4 @@ impl AudioRecorder {
         self.shared.lock().unwrap().rms()
     }
 
-    /// Whether recording is currently active.
-    pub fn is_recording(&self) -> bool {
-        self.recording
-    }
 }

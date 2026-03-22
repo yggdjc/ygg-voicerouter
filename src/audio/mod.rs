@@ -21,11 +21,10 @@
 pub mod denoise;
 pub mod recorder;
 
-pub use recorder::AudioRecorder;
-
 use anyhow::Result;
 
 use crate::config::AudioConfig;
+use recorder::AudioRecorder;
 use denoise::denoise as apply_denoise;
 
 /// Combined audio capture and optional denoising pipeline.
@@ -75,4 +74,13 @@ impl AudioPipeline {
     pub fn rms(&self) -> f32 {
         self.recorder.rms()
     }
+}
+
+/// Compute root-mean-square amplitude of `samples`.
+pub fn compute_rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+    (sum_sq / samples.len() as f32).sqrt()
 }
