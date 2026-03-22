@@ -108,8 +108,10 @@ pub fn detect_method() -> InjectMethod {
 // Back-end implementations
 // ---------------------------------------------------------------------------
 
-/// Inject text via clipboard: copy → verify → paste keystroke.
+/// Inject text via clipboard: save → copy → verify → paste → restore.
 pub fn clipboard_paste(text: &str) -> Result<()> {
+    let saved = read_clipboard().ok();
+
     write_clipboard(text)
         .context("clipboard_paste: failed to write text to clipboard")?;
 
@@ -122,6 +124,16 @@ pub fn clipboard_paste(text: &str) -> Result<()> {
 
     // Let the target app process the paste event.
     thread::sleep(Duration::from_millis(100));
+
+    // Restore original clipboard in background to avoid blocking.
+    if let Some(original) = saved {
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            if let Err(e) = write_clipboard(&original) {
+                log::debug!("clipboard restore failed: {e}");
+            }
+        });
+    }
 
     Ok(())
 }
