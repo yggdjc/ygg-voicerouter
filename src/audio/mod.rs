@@ -133,8 +133,9 @@ impl NoiseTracker {
         let p15_idx = window_rms.len() * 15 / 100;
         let measured = window_rms[p15_idx.max(1)];
 
-        // Skip update if measured is near-zero (mic muted / digital silence).
-        if measured < 0.0001 {
+        // Skip update if measured is near-zero (mic muted / digital silence)
+        // or suspiciously high (speech leaked into a "silence" sample).
+        if measured < 0.0001 || measured > self.noise_floor * 5.0 {
             return;
         }
 

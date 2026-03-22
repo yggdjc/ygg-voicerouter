@@ -291,9 +291,6 @@ fn validate_recording(
 ) -> Option<Vec<f32>> {
     let samples = audio.stop_recording()?;
 
-    // Update noise floor from this recording regardless of outcome.
-    noise_tracker.update(&samples);
-
     if elapsed < MIN_RECORDING_SECS {
         log::info!(
             "recording too short ({elapsed:.1}s < {MIN_RECORDING_SECS}s), discarding"
@@ -304,6 +301,9 @@ fn validate_recording(
     let rms = audio::compute_rms(&samples);
     let threshold = noise_tracker.threshold();
     if rms < threshold {
+        // Only update noise floor from recordings that are pure silence.
+        // Speech recordings would inflate the estimate.
+        noise_tracker.update(&samples);
         log::info!(
             "recording is silence (RMS {rms:.4} < {threshold:.4}), discarding"
         );
