@@ -3,8 +3,7 @@
 //! # Design
 //!
 //! sherpa-rs 0.6 exposes **offline-only** recognizers; there is no
-//! streaming/online API for Paraformer in this version. The `streaming` flag
-//! in [`AsrConfig`] is accepted but has no effect — all inference is batched.
+//! streaming/online API for Paraformer in this version.
 //!
 //! The public interface is intentionally simple:
 //!
@@ -18,7 +17,6 @@
 //! ```
 
 use anyhow::{Context, Result};
-use log::warn;
 
 use crate::config::AsrConfig;
 
@@ -46,8 +44,8 @@ enum Backend {
 // deriving it for the struct and implement a manual one that omits internals.
 pub struct AsrEngine {
     backend: Backend,
-    /// Original config retained for diagnostics.
-    model_name: String,
+    /// Original config retained for error messages.
+    _model_name: String,
 }
 
 impl AsrEngine {
@@ -63,13 +61,6 @@ impl AsrEngine {
     /// - Model files are not found on disk.
     /// - The underlying sherpa-onnx recognizer fails to initialise.
     pub fn new(config: &AsrConfig) -> Result<Self> {
-        if config.streaming {
-            warn!(
-                "AsrConfig.streaming=true requested but sherpa-rs 0.6 has no online recognizer \
-                 for paraformer; falling back to offline batch inference."
-            );
-        }
-
         let model_dir = prepare_model_dir(&config.model_dir)?;
         let paths = get_model_paths(&config.model, &model_dir)
             .with_context(|| format!("resolving paths for model '{}'", config.model))?;
@@ -93,7 +84,7 @@ impl AsrEngine {
 
         Ok(Self {
             backend,
-            model_name: config.model.clone(),
+            _model_name: config.model.clone(),
         })
     }
 
@@ -118,11 +109,6 @@ impl AsrEngine {
         Ok(text.trim().to_owned())
     }
 
-    /// The model name this engine was constructed with.
-    #[must_use]
-    pub fn model_name(&self) -> &str {
-        &self.model_name
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +136,6 @@ fn build_backend(
                 .extras
                 .first()
                 .with_context(|| format!("missing decoder path for model '{model_name}'"))?;
-            let variant = if model_name == "whisper-tiny-en" { "tiny.en" } else { "base.en" };
             let cfg = sherpa_rs::whisper::WhisperConfig {
                 encoder: paths.model.to_string_lossy().into_owned(),
                 decoder: decoder.to_string_lossy().into_owned(),
@@ -158,7 +143,6 @@ fn build_backend(
                 language: "en".to_owned(),
                 ..Default::default()
             };
-            let _ = variant; // reserved for future model-specific tuning
             let rec = sherpa_rs::whisper::WhisperRecognizer::new(cfg)
                 .map_err(|e| anyhow::anyhow!("WhisperRecognizer init failed: {e}"))?;
             Ok(Backend::Whisper(rec))

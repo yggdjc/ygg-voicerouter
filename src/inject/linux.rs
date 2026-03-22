@@ -143,17 +143,6 @@ pub fn xdotool_inject(text: &str) -> Result<()> {
 // Clipboard helpers
 // ---------------------------------------------------------------------------
 
-/// Read the current clipboard content using the best available tool.
-fn read_clipboard() -> Result<String> {
-    if is_command_available("wl-paste") {
-        return run_command("wl-paste", &["--no-newline"]);
-    }
-    if is_command_available("xclip") {
-        return run_command("xclip", &["-selection", "clipboard", "-o"]);
-    }
-    bail!("read_clipboard: neither wl-paste nor xclip is available");
-}
-
 /// Write `text` to the clipboard using the best available tool.
 fn write_clipboard(text: &str) -> Result<()> {
     if is_command_available("wl-copy") {

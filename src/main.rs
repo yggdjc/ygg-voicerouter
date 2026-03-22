@@ -1,5 +1,8 @@
 //! voicerouter CLI entry point.
 
+mod service;
+mod setup;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -8,7 +11,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use voicerouter::asr::AsrEngine;
-use voicerouter::audio::AudioPipeline;
+use voicerouter::audio::{self, AudioPipeline};
 use voicerouter::config::Config;
 use voicerouter::hotkey::{HotkeyEvent, HotkeyMonitor};
 use voicerouter::postprocess::postprocess;
@@ -50,11 +53,6 @@ struct Cli {
 enum Commands {
     /// Check tools, model files, and create default config if missing.
     Setup,
-    /// Get or set a config value.
-    Config {
-        key: Option<String>,
-        value: Option<String>,
-    },
     /// Control the background systemd user service.
     Service {
         /// Action: install | uninstall | start | stop | status
@@ -70,12 +68,14 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let log_level = if cli.verbose { "debug" } else { "info" };
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level)).init();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(log_level),
+    )
+    .init();
 
     let config = Config::load(cli.config.as_deref())?;
     log::debug!("loaded config: {config:?}");
 
-    // One-shot test/utility flags take priority over subcommands.
     if cli.test_audio {
         return run_test_audio(&config);
     }
@@ -85,9 +85,8 @@ fn main() -> Result<()> {
 
     match cli.command {
         None => run_daemon(config, cli.preload),
-        Some(Commands::Setup) => run_setup(&config),
-        Some(Commands::Config { key, value }) => run_config(key.as_deref(), value.as_deref()),
-        Some(Commands::Service { action }) => run_service(&action),
+        Some(Commands::Setup) => setup::run(&config),
+        Some(Commands::Service { action }) => service::run(&action),
     }
 }
 
@@ -111,14 +110,11 @@ fn run_test_audio(config: &Config) -> Result<()> {
     }
 
     let samples = pipeline.stop_recording().unwrap_or_default();
-    let overall_rms = if samples.is_empty() {
-        0.0_f32
-    } else {
-        let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
-        (sum_sq / samples.len() as f32).sqrt()
-    };
-
-    println!("Done. Captured {} samples. Overall RMS: {overall_rms:.4}", samples.len());
+    let overall_rms = audio::compute_rms(&samples);
+    println!(
+        "Done. Captured {} samples. Overall RMS: {overall_rms:.4}",
+        samples.len()
+    );
     Ok(())
 }
 
@@ -141,7 +137,6 @@ fn run_test_inject(text: &str, config: &Config) -> Result<()> {
 fn run_daemon(config: Config, preload: bool) -> Result<()> {
     log::info!("voicerouter starting up");
 
-    // Set up Ctrl+C handler.
     let running = Arc::new(AtomicBool::new(true));
     let running_ctrlc = Arc::clone(&running);
     ctrlc::set_handler(move || {
@@ -152,23 +147,18 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
 
     let mut audio = AudioPipeline::new(&config.audio)
         .context("failed to open audio device")?;
-
     let mut monitor = HotkeyMonitor::new(&config.hotkey)
         .context("failed to open hotkey monitor")?;
-
     let router = Router::new(&config);
 
-    // Optionally pre-load the ASR model before entering the loop.
     let mut asr_engine: Option<AsrEngine> = if preload {
         log::info!("preloading ASR model '{}'", config.asr.model);
-        Some(AsrEngine::new(&config.asr).context("ASR engine init failed (preload)")?)
+        Some(AsrEngine::new(&config.asr).context("preload failed")?)
     } else {
         None
     };
 
-    // Lazy-initialised punctuation restorer (ct-transformer via sherpa-onnx).
     let mut punctuator: Option<sherpa_rs::punctuate::Punctuation> = None;
-
     let mut recording_start: Option<Instant> = None;
 
     log::info!("ready — listening for hotkey '{}'", config.hotkey.key);
@@ -192,7 +182,10 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     Ok(())
 }
 
-/// Dispatch a single hotkey event through the full pipeline.
+// ---------------------------------------------------------------------------
+// Event handling
+// ---------------------------------------------------------------------------
+
 fn handle_event(
     event: HotkeyEvent,
     audio: &mut AudioPipeline,
@@ -203,15 +196,18 @@ fn handle_event(
     recording_start: &mut Option<Instant>,
 ) {
     match event {
-        HotkeyEvent::StartRecording => on_start_recording(audio, config, recording_start),
+        HotkeyEvent::StartRecording => {
+            on_start_recording(audio, config, recording_start);
+        }
         HotkeyEvent::StopRecording => {
-            on_stop_recording(audio, asr_engine, punctuator, config, router, recording_start);
+            on_stop_recording(
+                audio, asr_engine, punctuator, config, router,
+                recording_start,
+            );
         }
         HotkeyEvent::CancelAndToggle => {
-            // Auto mode short press: discard tentative PTT recording,
-            // silently restart for toggle mode (no second beep).
             log::info!("Auto short press — switching to toggle mode");
-            audio.stop_recording(); // discard
+            audio.stop_recording();
             if let Err(e) = audio.start_recording() {
                 log::error!("failed to restart recording for toggle: {e:#}");
                 return;
@@ -227,14 +223,10 @@ fn on_start_recording(
     recording_start: &mut Option<Instant>,
 ) {
     log::info!("Recording started");
-    if config.sound.feedback {
-        sound::beep_start().ok();
-    }
+    beep_if(config, sound::beep_start);
     if let Err(e) = audio.start_recording() {
         log::error!("start_recording failed: {e:#}");
-        if config.sound.feedback {
-            sound::beep_error().ok();
-        }
+        beep_if(config, sound::beep_error);
         return;
     }
     *recording_start = Some(Instant::now());
@@ -242,7 +234,6 @@ fn on_start_recording(
 
 /// Minimum recording duration in seconds — shorter clips are discarded.
 const MIN_RECORDING_SECS: f32 = 0.3;
-
 
 fn on_stop_recording(
     audio: &mut AudioPipeline,
@@ -252,70 +243,90 @@ fn on_stop_recording(
     router: &Router,
     recording_start: &mut Option<Instant>,
 ) {
-    let elapsed = recording_start.take().map_or(0.0, |t| t.elapsed().as_secs_f32());
+    let elapsed = recording_start
+        .take()
+        .map_or(0.0, |t| t.elapsed().as_secs_f32());
     log::info!("Recording stopped ({elapsed:.1}s)");
+    beep_if(config, sound::beep_done);
 
-    // Play done beep immediately on key-up, before processing.
-    if config.sound.feedback {
-        sound::beep_done().ok();
-    }
-
-    let Some(samples) = audio.stop_recording() else {
-        log::warn!("stop_recording returned no data");
-        return;
+    let samples = match validate_recording(audio, elapsed, config) {
+        Some(s) => s,
+        None => return,
     };
 
-    // Filter: too short.
-    if elapsed < MIN_RECORDING_SECS {
-        log::info!("recording too short ({elapsed:.1}s < {MIN_RECORDING_SECS}s), discarding");
-        return;
-    }
-
-    // Filter: silence (compute overall RMS of the captured samples).
-    let rms = if samples.is_empty() {
-        0.0
-    } else {
-        let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
-        (sum_sq / samples.len() as f32).sqrt()
-    };
-    let threshold = config.audio.silence_threshold as f32;
-    if rms < threshold {
-        log::info!("recording is silence (RMS {rms:.4} < {threshold}), discarding");
-        return;
-    }
-
-    let text = match transcribe(samples, asr_engine, config) {
-        Ok(t) => t,
-        Err(e) => {
-            log::error!("transcription failed: {e:#}");
-            if config.sound.feedback {
-                sound::beep_error().ok();
-            }
-            return;
-        }
+    let text = match transcribe_and_process(
+        samples, asr_engine, punctuator, config,
+    ) {
+        Some(t) => t,
+        None => return,
     };
 
-    if text.is_empty() {
-        log::info!("Transcribed: (empty)");
-        return;
-    }
-
-    // Restore punctuation via ct-transformer if enabled.
-    let text = add_punctuation(&text, punctuator, config);
-
-    let processed = postprocess(&text, &config.postprocess);
-    log::info!("Transcribed: {processed:?}");
-    log::info!("Dispatching to handler");
-
-    if let Err(e) = router.dispatch(&processed) {
+    if let Err(e) = router.dispatch(&text) {
         log::error!("dispatch failed: {e:#}");
-        if config.sound.feedback {
-            sound::beep_error().ok();
-        }
+        beep_if(config, sound::beep_error);
     }
 }
 
-/// Run ASR on `samples`, lazily initialising the engine if not yet created.
+/// Stop recording and validate: returns samples if audio is long enough
+/// and loud enough to process.
+fn validate_recording(
+    audio: &mut AudioPipeline,
+    elapsed: f32,
+    config: &Config,
+) -> Option<Vec<f32>> {
+    let samples = audio.stop_recording()?;
+
+    if elapsed < MIN_RECORDING_SECS {
+        log::info!(
+            "recording too short ({elapsed:.1}s < {MIN_RECORDING_SECS}s), discarding"
+        );
+        return None;
+    }
+
+    let rms = audio::compute_rms(&samples);
+    let threshold = config.audio.silence_threshold as f32;
+    if rms < threshold {
+        log::info!(
+            "recording is silence (RMS {rms:.4} < {threshold}), discarding"
+        );
+        return None;
+    }
+
+    Some(samples)
+}
+
+/// Run ASR, punctuation restoration, and post-processing. Returns the
+/// final text or `None` on failure / empty result.
+fn transcribe_and_process(
+    samples: Vec<f32>,
+    asr_engine: &mut Option<AsrEngine>,
+    punctuator: &mut Option<sherpa_rs::punctuate::Punctuation>,
+    config: &Config,
+) -> Option<String> {
+    let text = match transcribe(samples, asr_engine, config) {
+        Ok(t) if !t.is_empty() => t,
+        Ok(_) => {
+            log::info!("Transcribed: (empty)");
+            return None;
+        }
+        Err(e) => {
+            log::error!("transcription failed: {e:#}");
+            beep_if(config, sound::beep_error);
+            return None;
+        }
+    };
+
+    let text = add_punctuation(&text, punctuator, config);
+    let processed = postprocess(&text, &config.postprocess);
+    log::info!("Transcribed: {processed:?}");
+    Some(processed)
+}
+
+// ---------------------------------------------------------------------------
+// ASR helpers
+// ---------------------------------------------------------------------------
+
+/// Run ASR on `samples`, lazily initialising the engine if needed.
 fn transcribe(
     samples: Vec<f32>,
     asr_engine: &mut Option<AsrEngine>,
@@ -341,232 +352,59 @@ fn add_punctuation(
         return text.to_owned();
     }
 
-    // Lazy-init the punctuation model.
     if punctuator.is_none() {
-        let model_path = match voicerouter::asr::models::expand_tilde(
-            &config.postprocess.punctuation_model,
-        ) {
-            Ok(p) => p,
-            Err(e) => {
-                log::warn!("punctuation model path error: {e}");
-                return text.to_owned();
-            }
-        };
-        let model_file = model_path.join("model.int8.onnx");
-        if !model_file.exists() {
-            log::warn!(
-                "punctuation model not found at {}; skipping",
-                model_file.display()
-            );
-            return text.to_owned();
+        *punctuator = init_punctuator(config);
+    }
+
+    match punctuator.as_mut() {
+        Some(punc) => punc.add_punctuation(text),
+        None => text.to_owned(),
+    }
+}
+
+fn init_punctuator(
+    config: &Config,
+) -> Option<sherpa_rs::punctuate::Punctuation> {
+    let model_path = match voicerouter::asr::models::expand_tilde(
+        &config.postprocess.punctuation_model,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("punctuation model path error: {e}");
+            return None;
         }
-        log::info!("loading punctuation model from {}", model_file.display());
-        let cfg = sherpa_rs::punctuate::PunctuationConfig {
-            model: model_file.to_string_lossy().into_owned(),
-            ..Default::default()
-        };
-        match sherpa_rs::punctuate::Punctuation::new(cfg) {
-            Ok(p) => *punctuator = Some(p),
-            Err(e) => {
-                log::error!("punctuation model init failed: {e}");
-                return text.to_owned();
-            }
-        }
-    }
-
-    let punc = punctuator.as_mut().expect("just initialised");
-    punc.add_punctuation(text)
-}
-
-// ---------------------------------------------------------------------------
-// setup subcommand
-// ---------------------------------------------------------------------------
-
-fn run_setup(config: &Config) -> Result<()> {
-    println!("voicerouter setup check");
-    println!();
-    check_tools();
-    check_model(config);
-    ensure_default_config()?;
-    Ok(())
-}
-
-fn check_tools() {
-    let tools = [
-        ("wl-copy", "clipboard paste on Wayland"),
-        ("wtype",   "Wayland typing"),
-        ("xdotool", "X11 typing"),
-        ("ydotool", "universal keystroke injection"),
-        ("ffmpeg",  "audio format conversion (optional)"),
-    ];
-    println!("Tool availability:");
-    for (tool, description) in &tools {
-        let found = which_found(tool);
-        let status = if found { "OK" } else { "MISSING" };
-        println!("  [{status:^7}] {tool:<12} — {description}");
-    }
-    println!();
-}
-
-fn which_found(tool: &str) -> bool {
-    std::process::Command::new("which")
-        .arg(tool)
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
-
-fn check_model(config: &Config) {
-    use voicerouter::asr::models::{expand_tilde, model_files_exist};
-
-    let model_name = &config.asr.model;
-    let model_dir = expand_tilde(&config.asr.model_dir).unwrap_or_default();
-    let present = model_files_exist(model_name, &model_dir).unwrap_or(false);
-    let status = if present { "OK     " } else { "MISSING" };
-    println!("ASR model files:");
-    println!("  [{status}] {model_name} in {}", model_dir.display());
-    if !present {
-        println!("  Run `voicerouter setup` after placing model files, or check");
-        println!("  the docs for download instructions.");
-    }
-    println!();
-}
-
-fn ensure_default_config() -> Result<()> {
-    let Some(path) = Config::default_path() else {
-        println!("Could not determine config directory — skipping.");
-        return Ok(());
     };
-
-    if path.exists() {
-        println!("Config file already exists: {}", path.display());
-        return Ok(());
+    let model_file = model_path.join("model.int8.onnx");
+    if !model_file.exists() {
+        log::warn!(
+            "punctuation model not found at {}; skipping",
+            model_file.display()
+        );
+        return None;
     }
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating config directory: {}", parent.display()))?;
-    }
-
-    let default_toml = include_str!("../config.default.toml");
-    std::fs::write(&path, default_toml)
-        .with_context(|| format!("writing default config: {}", path.display()))?;
-
-    println!("Created default config: {}", path.display());
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// config subcommand
-// ---------------------------------------------------------------------------
-
-fn run_config(key: Option<&str>, value: Option<&str>) -> Result<()> {
-    match (key, value) {
-        (None, _) => {
-            println!("Usage: voicerouter config <key> [<value>]");
-            println!("Config file: {}", Config::default_path()
-                .map_or_else(|| "(unknown)".to_owned(), |p| p.display().to_string()));
-        }
-        (Some(k), None) => {
-            println!("Reading config key '{k}' — not yet implemented.");
-        }
-        (Some(k), Some(v)) => {
-            println!("Setting config key '{k}' = '{v}' — not yet implemented.");
-        }
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// service subcommand
-// ---------------------------------------------------------------------------
-
-const SERVICE_NAME: &str = "voicerouter";
-const SERVICE_UNIT: &str = "voicerouter.service";
-
-fn run_service(action: &str) -> Result<()> {
-    match action {
-        "install" => service_install(),
-        "uninstall" => service_uninstall(),
-        "start" | "stop" | "status" | "restart" => systemctl(action),
-        other => {
-            anyhow::bail!(
-                "unknown service action {other:?}. \
-                 Valid: install, uninstall, start, stop, restart, status"
-            );
+    log::info!("loading punctuation model from {}", model_file.display());
+    let cfg = sherpa_rs::punctuate::PunctuationConfig {
+        model: model_file.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    match sherpa_rs::punctuate::Punctuation::new(cfg) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            log::error!("punctuation model init failed: {e}");
+            None
         }
     }
 }
 
-fn service_install() -> Result<()> {
-    let unit_dir = systemd_unit_dir()?;
-    std::fs::create_dir_all(&unit_dir)
-        .with_context(|| format!("creating unit dir: {}", unit_dir.display()))?;
+// ---------------------------------------------------------------------------
+// Utility helpers
+// ---------------------------------------------------------------------------
 
-    let binary = std::env::current_exe().context("cannot determine current binary path")?;
-    let unit_content = format!(
-        "[Unit]\n\
-         Description=voicerouter — offline voice router\n\
-         After=graphical-session.target\n\
-         \n\
-         [Service]\n\
-         Type=simple\n\
-         ExecStart={binary}\n\
-         Restart=on-failure\n\
-         RestartSec=5\n\
-         \n\
-         [Install]\n\
-         WantedBy=default.target\n",
-        binary = binary.display(),
-    );
-
-    let unit_path = unit_dir.join(SERVICE_UNIT);
-    std::fs::write(&unit_path, unit_content)
-        .with_context(|| format!("writing service file: {}", unit_path.display()))?;
-
-    println!("Installed: {}", unit_path.display());
-
-    // Reload and enable.
-    run_systemctl(&["--user", "daemon-reload"])?;
-    run_systemctl(&["--user", "enable", SERVICE_NAME])?;
-    println!("Service enabled. Use `voicerouter service start` to start it.");
-    Ok(())
-}
-
-fn service_uninstall() -> Result<()> {
-    // Stop and disable — ignore errors (service may not be running).
-    let _ = run_systemctl(&["--user", "stop", SERVICE_NAME]);
-    let _ = run_systemctl(&["--user", "disable", SERVICE_NAME]);
-
-    let unit_path = systemd_unit_dir()?.join(SERVICE_UNIT);
-    if unit_path.exists() {
-        std::fs::remove_file(&unit_path)
-            .with_context(|| format!("removing unit file: {}", unit_path.display()))?;
-        println!("Removed: {}", unit_path.display());
-    } else {
-        println!("Unit file not found — nothing to remove.");
+/// Play a beep if sound feedback is enabled, logging any failure.
+fn beep_if(config: &Config, f: fn() -> Result<()>) {
+    if config.sound.feedback {
+        if let Err(e) = f() {
+            log::debug!("beep failed: {e}");
+        }
     }
-
-    let _ = run_systemctl(&["--user", "daemon-reload"]);
-    Ok(())
-}
-
-fn systemctl(action: &str) -> Result<()> {
-    run_systemctl(&["--user", action, SERVICE_NAME])
-}
-
-fn run_systemctl(args: &[&str]) -> Result<()> {
-    let status = std::process::Command::new("systemctl")
-        .args(args)
-        .status()
-        .context("failed to run systemctl")?;
-
-    if !status.success() {
-        anyhow::bail!("systemctl {} exited with {}", args.join(" "), status);
-    }
-    Ok(())
-}
-
-fn systemd_unit_dir() -> Result<std::path::PathBuf> {
-    let config_dir = dirs::config_dir().context("cannot determine config directory")?;
-    Ok(config_dir.join("systemd").join("user"))
 }

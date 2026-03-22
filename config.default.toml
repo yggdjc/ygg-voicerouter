@@ -21,6 +21,7 @@ denoise = true
 # Model identifier: "paraformer-zh", "whisper-tiny-en", "whisper-base-en"
 model = "paraformer-zh"
 model_dir = "~/.cache/voicerouter/models"
+# sherpa-rs 0.6 supports offline inference only; streaming is not available.
 
 [postprocess]
 # "strip_trailing", "keep", or "replace_space"
@@ -34,9 +35,6 @@ method = "auto"
 
 [sound]
 feedback = true
-
-[llm]
-enabled = false
 
 [router]
 # Add routing rules here.  First match wins.

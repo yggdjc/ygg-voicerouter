@@ -109,7 +109,7 @@ impl Default for AudioConfig {
         Self {
             sample_rate: 16000,
             channels: 1,
-            silence_threshold: 0.012,
+            silence_threshold: 0.01,
             silence_duration: 1.5,
             max_record_seconds: 30,
             denoise: true,
@@ -125,8 +125,6 @@ pub struct AsrConfig {
     pub model: String,
     /// Directory where model files are stored (tilde-expanded at runtime).
     pub model_dir: String,
-    /// Use streaming (online) inference when available.
-    pub streaming: bool,
 }
 
 impl Default for AsrConfig {
@@ -134,7 +132,6 @@ impl Default for AsrConfig {
         Self {
             model: "paraformer-zh".to_owned(),
             model_dir: "~/.cache/voicerouter/models".to_owned(),
-            streaming: true,
         }
     }
 }
@@ -192,13 +189,6 @@ pub struct RouterConfig {
     pub rules: Vec<Rule>,
 }
 
-/// LLM integration configuration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LlmConfig {
-    pub enabled: bool,
-}
-
 /// Audio feedback (earcon) configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -230,7 +220,6 @@ pub struct Config {
     pub postprocess: PostprocessConfig,
     pub inject: InjectConfig,
     pub router: RouterConfig,
-    pub llm: LlmConfig,
     pub sound: SoundConfig,
 }
 
@@ -283,7 +272,6 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.hotkey.key, "KEY_RIGHTALT");
         assert_eq!(config.audio.sample_rate, 16000);
-        assert!(!config.llm.enabled);
         assert!(config.sound.feedback);
     }
 

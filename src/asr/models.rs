@@ -83,11 +83,11 @@ pub fn model_info(model_name: &str, model_dir: &Path) -> Result<ModelInfo> {
                 },
                 ModelFile {
                     url: String::new(),
-                    local_path: base.join("tiny.en-decoder.int8.onnx"),
+                    local_path: base.join("tiny.en-tokens.txt"),
                 },
                 ModelFile {
                     url: String::new(),
-                    local_path: base.join("tiny.en-tokens.txt"),
+                    local_path: base.join("tiny.en-decoder.int8.onnx"),
                 },
             ],
         }),
@@ -102,15 +102,17 @@ pub fn model_info(model_name: &str, model_dir: &Path) -> Result<ModelInfo> {
                 },
                 ModelFile {
                     url: String::new(),
-                    local_path: base.join("base.en-decoder.int8.onnx"),
+                    local_path: base.join("base.en-tokens.txt"),
                 },
                 ModelFile {
                     url: String::new(),
-                    local_path: base.join("base.en-tokens.txt"),
+                    local_path: base.join("base.en-decoder.int8.onnx"),
                 },
             ],
         }),
-        other => bail!("unsupported model '{other}'. Supported: paraformer-zh, whisper-tiny-en, whisper-base-en"),
+        other => bail!(
+            "unsupported model '{other}'. Supported: paraformer-zh, whisper-tiny-en, whisper-base-en"
+        ),
     }
 }
 
@@ -121,29 +123,32 @@ pub fn model_info(model_name: &str, model_dir: &Path) -> Result<ModelInfo> {
 /// Return [`ModelPaths`] for `model_name` inside `model_dir` without checking
 /// whether the files actually exist.
 ///
+/// Derived from [`model_info`] so the model registry is defined in one place.
+///
 /// # Errors
 ///
 /// Returns an error if `model_name` is not in the registry.
 pub fn get_model_paths(model_name: &str, model_dir: &Path) -> Result<ModelPaths> {
-    let base = model_dir.join(model_name);
-    match model_name {
-        "paraformer-zh" => Ok(ModelPaths {
-            model: base.join("model.int8.onnx"),
-            tokens: base.join("tokens.txt"),
-            extras: vec![],
-        }),
-        "whisper-tiny-en" => Ok(ModelPaths {
-            model: base.join("tiny.en-encoder.int8.onnx"),
-            tokens: base.join("tiny.en-tokens.txt"),
-            extras: vec![base.join("tiny.en-decoder.int8.onnx")],
-        }),
-        "whisper-base-en" => Ok(ModelPaths {
-            model: base.join("base.en-encoder.int8.onnx"),
-            tokens: base.join("base.en-tokens.txt"),
-            extras: vec![base.join("base.en-decoder.int8.onnx")],
-        }),
-        other => bail!("unsupported model '{other}'"),
-    }
+    let info = model_info(model_name, model_dir)?;
+    let mut files = info.files.into_iter();
+
+    let model = files
+        .next()
+        .map(|f| f.local_path)
+        .context("model has no files")?;
+
+    let tokens_path = files
+        .next()
+        .map(|f| f.local_path)
+        .context("model has no tokens file")?;
+
+    let extras: Vec<PathBuf> = files.map(|f| f.local_path).collect();
+
+    Ok(ModelPaths {
+        model,
+        tokens: tokens_path,
+        extras,
+    })
 }
 
 /// Check whether all required files for `model_name` are present in
