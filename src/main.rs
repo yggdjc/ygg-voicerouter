@@ -301,9 +301,6 @@ fn validate_recording(
     let rms = audio::compute_rms(&samples);
     let threshold = noise_tracker.threshold();
     if rms < threshold {
-        // Only update noise floor from recordings that are pure silence.
-        // Speech recordings would inflate the estimate.
-        noise_tracker.update(&samples);
         log::info!(
             "recording is silence (RMS {rms:.4} < {threshold:.4}), discarding"
         );

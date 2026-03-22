@@ -105,9 +105,9 @@ impl NoiseTracker {
         }
     }
 
-    /// Current silence threshold (noise_floor × 3, clamped).
+    /// Current silence threshold (noise_floor × 2, clamped).
     pub fn threshold(&self) -> f32 {
-        (self.noise_floor * 3.0).clamp(self.floor_min, self.ceiling)
+        (self.noise_floor * 2.0).clamp(self.floor_min, self.ceiling)
     }
 
     /// Update noise floor estimate from a completed recording.
@@ -209,9 +209,9 @@ pub fn calibrate_silence(
     window_rms.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let median = window_rms[window_rms.len() / 2];
 
-    // Threshold = 3× noise floor, clamped to sane bounds.
+    // Threshold = 2× noise floor, clamped to sane bounds.
     let ceiling = 0.05_f32;
-    let threshold = (median * 3.0).clamp(floor, ceiling);
+    let threshold = (median * 2.0).clamp(floor, ceiling);
 
     log::info!(
         "noise floor (median RMS): {median:.4}, threshold: {threshold:.4} \
