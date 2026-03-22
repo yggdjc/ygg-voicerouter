@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use voicerouter::asr::AsrEngine;
-use voicerouter::audio::{self, AudioPipeline};
+use voicerouter::audio::{self, AudioPipeline, NoiseTracker};
 use voicerouter::config::Config;
 use voicerouter::hotkey::{HotkeyEvent, HotkeyMonitor};
 use voicerouter::postprocess::postprocess;
@@ -148,10 +148,15 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     let mut audio = AudioPipeline::new(&config.audio)
         .context("failed to open audio device")?;
 
-    let silence_threshold = audio::calibrate_silence(
+    let initial_floor = audio::calibrate_silence(
         &mut audio,
         config.audio.sample_rate,
         config.audio.silence_threshold as f32,
+    );
+    let mut noise_tracker = NoiseTracker::new(
+        initial_floor,
+        config.audio.silence_threshold as f32,
+        config.audio.sample_rate,
     );
 
     let mut monitor = HotkeyMonitor::new(&config.hotkey)
@@ -180,7 +185,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
                 &config,
                 &router,
                 &mut recording_start,
-                silence_threshold,
+                &mut noise_tracker,
             );
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -202,7 +207,7 @@ fn handle_event(
     config: &Config,
     router: &Router,
     recording_start: &mut Option<Instant>,
-    silence_threshold: f32,
+    noise_tracker: &mut NoiseTracker,
 ) {
     match event {
         HotkeyEvent::StartRecording => {
@@ -211,7 +216,7 @@ fn handle_event(
         HotkeyEvent::StopRecording => {
             on_stop_recording(
                 audio, asr_engine, punctuator, config, router,
-                recording_start, silence_threshold,
+                recording_start, noise_tracker,
             );
         }
         HotkeyEvent::CancelAndToggle => {
@@ -251,7 +256,7 @@ fn on_stop_recording(
     config: &Config,
     router: &Router,
     recording_start: &mut Option<Instant>,
-    silence_threshold: f32,
+    noise_tracker: &mut NoiseTracker,
 ) {
     let elapsed = recording_start
         .take()
@@ -259,7 +264,7 @@ fn on_stop_recording(
     log::info!("Recording stopped ({elapsed:.1}s)");
     beep_if(config, sound::beep_done);
 
-    let samples = match validate_recording(audio, elapsed, silence_threshold) {
+    let samples = match validate_recording(audio, elapsed, noise_tracker) {
         Some(s) => s,
         None => return,
     };
@@ -282,9 +287,12 @@ fn on_stop_recording(
 fn validate_recording(
     audio: &mut AudioPipeline,
     elapsed: f32,
-    threshold: f32,
+    noise_tracker: &mut NoiseTracker,
 ) -> Option<Vec<f32>> {
     let samples = audio.stop_recording()?;
+
+    // Update noise floor from this recording regardless of outcome.
+    noise_tracker.update(&samples);
 
     if elapsed < MIN_RECORDING_SECS {
         log::info!(
@@ -294,9 +302,10 @@ fn validate_recording(
     }
 
     let rms = audio::compute_rms(&samples);
+    let threshold = noise_tracker.threshold();
     if rms < threshold {
         log::info!(
-            "recording is silence (RMS {rms:.4} < {threshold}), discarding"
+            "recording is silence (RMS {rms:.4} < {threshold:.4}), discarding"
         );
         return None;
     }

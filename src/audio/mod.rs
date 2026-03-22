@@ -76,6 +76,86 @@ impl AudioPipeline {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Noise floor tracking
+// ---------------------------------------------------------------------------
+
+/// Tracks noise floor across recordings using exponential moving average.
+///
+/// Each recording is analyzed in 50ms windows. The P15 (15th percentile)
+/// of windowed RMS values estimates the noise floor — this captures the
+/// quiet segments (background noise) while ignoring speech peaks.
+///
+/// The threshold for silence detection is `noise_floor × 3`.
+pub struct NoiseTracker {
+    noise_floor: f32,
+    floor_min: f32,
+    ceiling: f32,
+    sample_rate: u32,
+}
+
+impl NoiseTracker {
+    /// Create a tracker with an initial noise floor estimate.
+    pub fn new(initial: f32, floor_min: f32, sample_rate: u32) -> Self {
+        Self {
+            noise_floor: initial,
+            floor_min,
+            ceiling: 0.05,
+            sample_rate,
+        }
+    }
+
+    /// Current silence threshold (noise_floor × 3, clamped).
+    pub fn threshold(&self) -> f32 {
+        (self.noise_floor * 3.0).clamp(self.floor_min, self.ceiling)
+    }
+
+    /// Update noise floor estimate from a completed recording.
+    ///
+    /// Extracts the P15 of windowed RMS as the noise floor, then blends
+    /// it into the running estimate with EMA (alpha=0.3).
+    pub fn update(&mut self, samples: &[f32]) {
+        let window_size = (self.sample_rate as usize) / 20; // 50ms
+        let mut window_rms: Vec<f32> = samples
+            .chunks(window_size)
+            .filter(|w| w.len() == window_size)
+            .map(|w| compute_rms(w))
+            .collect();
+
+        if window_rms.len() < 3 {
+            return;
+        }
+
+        window_rms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        // P15: 15th percentile — captures quiet segments, skips
+        // digital silence (all-zero) and speech peaks.
+        let p15_idx = window_rms.len() * 15 / 100;
+        let measured = window_rms[p15_idx.max(1)];
+
+        // Skip update if measured is near-zero (mic muted / digital silence).
+        if measured < 0.0001 {
+            return;
+        }
+
+        // EMA blend: 30% new measurement, 70% history.
+        let alpha = 0.3_f32;
+        let prev = self.noise_floor;
+        self.noise_floor = prev * (1.0 - alpha) + measured * alpha;
+
+        log::debug!(
+            "noise tracker: measured={measured:.4}, floor={prev:.4} → {:.4}, \
+             threshold={:.4}",
+            self.noise_floor,
+            self.threshold()
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
 /// Compute root-mean-square amplitude of `samples`.
 pub fn compute_rms(samples: &[f32]) -> f32 {
     if samples.is_empty() {
