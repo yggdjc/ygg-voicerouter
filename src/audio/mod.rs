@@ -84,3 +84,57 @@ pub fn compute_rms(samples: &[f32]) -> f32 {
     let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
     (sum_sq / samples.len() as f32).sqrt()
 }
+
+/// Record 1 second of ambient noise and derive a silence threshold.
+///
+/// Splits the sample into 50ms windows, computes RMS per window, and
+/// takes the **median** as the noise floor estimate.  The median is
+/// robust to transient spikes (keyboard clicks, coughs).
+///
+/// Returns `median_rms * 3`, clamped to `[floor, 0.05]`.
+/// `floor` is the config `silence_threshold` — the absolute minimum.
+pub fn calibrate_silence(
+    pipeline: &mut AudioPipeline,
+    sample_rate: u32,
+    floor: f32,
+) -> f32 {
+    log::info!("calibrating silence threshold (1s ambient sample)…");
+
+    if pipeline.start_recording().is_err() {
+        log::warn!("calibration failed to start — using floor {floor}");
+        return floor;
+    }
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let samples = pipeline.stop_recording().unwrap_or_default();
+
+    if samples.is_empty() {
+        log::warn!("calibration got no samples — using floor {floor}");
+        return floor;
+    }
+
+    // 50ms windows at the given sample rate.
+    let window_size = (sample_rate as usize) / 20;
+    let mut window_rms: Vec<f32> = samples
+        .chunks(window_size)
+        .filter(|w| w.len() == window_size)
+        .map(|w| compute_rms(w))
+        .collect();
+
+    if window_rms.is_empty() {
+        log::warn!("calibration too short for windowing — using floor {floor}");
+        return floor;
+    }
+
+    window_rms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = window_rms[window_rms.len() / 2];
+
+    // Threshold = 3× noise floor, clamped to sane bounds.
+    let ceiling = 0.05_f32;
+    let threshold = (median * 3.0).clamp(floor, ceiling);
+
+    log::info!(
+        "noise floor (median RMS): {median:.4}, threshold: {threshold:.4} \
+         (floor: {floor}, ceiling: {ceiling})"
+    );
+    threshold
+}

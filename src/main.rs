@@ -147,6 +147,13 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
 
     let mut audio = AudioPipeline::new(&config.audio)
         .context("failed to open audio device")?;
+
+    let silence_threshold = audio::calibrate_silence(
+        &mut audio,
+        config.audio.sample_rate,
+        config.audio.silence_threshold as f32,
+    );
+
     let mut monitor = HotkeyMonitor::new(&config.hotkey)
         .context("failed to open hotkey monitor")?;
     let router = Router::new(&config);
@@ -173,6 +180,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
                 &config,
                 &router,
                 &mut recording_start,
+                silence_threshold,
             );
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -194,6 +202,7 @@ fn handle_event(
     config: &Config,
     router: &Router,
     recording_start: &mut Option<Instant>,
+    silence_threshold: f32,
 ) {
     match event {
         HotkeyEvent::StartRecording => {
@@ -202,7 +211,7 @@ fn handle_event(
         HotkeyEvent::StopRecording => {
             on_stop_recording(
                 audio, asr_engine, punctuator, config, router,
-                recording_start,
+                recording_start, silence_threshold,
             );
         }
         HotkeyEvent::CancelAndToggle => {
@@ -242,6 +251,7 @@ fn on_stop_recording(
     config: &Config,
     router: &Router,
     recording_start: &mut Option<Instant>,
+    silence_threshold: f32,
 ) {
     let elapsed = recording_start
         .take()
@@ -249,7 +259,7 @@ fn on_stop_recording(
     log::info!("Recording stopped ({elapsed:.1}s)");
     beep_if(config, sound::beep_done);
 
-    let samples = match validate_recording(audio, elapsed, config) {
+    let samples = match validate_recording(audio, elapsed, silence_threshold) {
         Some(s) => s,
         None => return,
     };
@@ -272,7 +282,7 @@ fn on_stop_recording(
 fn validate_recording(
     audio: &mut AudioPipeline,
     elapsed: f32,
-    config: &Config,
+    threshold: f32,
 ) -> Option<Vec<f32>> {
     let samples = audio.stop_recording()?;
 
@@ -284,7 +294,6 @@ fn validate_recording(
     }
 
     let rms = audio::compute_rms(&samples);
-    let threshold = config.audio.silence_threshold as f32;
     if rms < threshold {
         log::info!(
             "recording is silence (RMS {rms:.4} < {threshold}), discarding"
