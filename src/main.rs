@@ -264,7 +264,7 @@ fn on_stop_recording(
     log::info!("Recording stopped ({elapsed:.1}s)");
     beep_if(config, sound::beep_done);
 
-    let samples = match validate_recording(audio, elapsed, noise_tracker) {
+    let samples = match validate_recording(audio, elapsed, noise_tracker, config) {
         Some(s) => s,
         None => return,
     };
@@ -288,6 +288,7 @@ fn validate_recording(
     audio: &mut AudioPipeline,
     elapsed: f32,
     noise_tracker: &mut NoiseTracker,
+    config: &Config,
 ) -> Option<Vec<f32>> {
     let samples = audio.stop_recording()?;
 
@@ -298,11 +299,12 @@ fn validate_recording(
         return None;
     }
 
-    let rms = audio::compute_rms(&samples);
     let threshold = noise_tracker.threshold();
-    if rms < threshold {
+    let peak = audio::peak_rms(&samples, config.audio.sample_rate);
+    if peak < threshold {
         log::info!(
-            "recording is silence (RMS {rms:.4} < {threshold:.4}), discarding"
+            "recording is silence (peak RMS {peak:.4} < {threshold:.4}), \
+             discarding"
         );
         return None;
     }

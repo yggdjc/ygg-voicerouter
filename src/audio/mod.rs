@@ -76,6 +76,21 @@ impl AudioPipeline {
     }
 }
 
+/// Peak windowed RMS — the loudest 50ms window in `samples`.
+///
+/// If any window in the recording exceeds the silence threshold,
+/// the recording contains speech. This is far more robust than
+/// overall RMS for low-gain microphones where speech and noise
+/// floor are close in average energy.
+pub fn peak_rms(samples: &[f32], sample_rate: u32) -> f32 {
+    let window_size = (sample_rate as usize) / 20; // 50ms
+    samples
+        .chunks(window_size)
+        .filter(|w| w.len() == window_size)
+        .map(|w| compute_rms(w))
+        .fold(0.0_f32, f32::max)
+}
+
 // ---------------------------------------------------------------------------
 // Noise floor tracking
 // ---------------------------------------------------------------------------
