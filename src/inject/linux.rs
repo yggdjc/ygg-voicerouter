@@ -108,21 +108,46 @@ pub fn detect_method() -> InjectMethod {
 // Back-end implementations
 // ---------------------------------------------------------------------------
 
-/// Inject text via clipboard: save → copy → paste keystroke → restore.
+/// Inject text via clipboard: copy → verify → paste keystroke.
 pub fn clipboard_paste(text: &str) -> Result<()> {
-    // 1. Copy text to clipboard.
-    write_clipboard(text).context("clipboard_paste: failed to write text to clipboard")?;
+    write_clipboard(text)
+        .context("clipboard_paste: failed to write text to clipboard")?;
 
-    // 2. Small delay to ensure clipboard daemon is fully serving.
-    thread::sleep(Duration::from_millis(50));
+    // Poll until clipboard actually contains our text (wl-copy daemon
+    // may not be serving yet). Give up after 500ms and paste anyway.
+    wait_clipboard_ready(text);
 
-    // 3. Simulate Ctrl+V.
-    send_paste_key().context("clipboard_paste: failed to send paste keystroke")?;
+    send_paste_key()
+        .context("clipboard_paste: failed to send paste keystroke")?;
 
-    // 4. Wait for target app to process the paste event.
+    // Let the target app process the paste event.
     thread::sleep(Duration::from_millis(100));
 
     Ok(())
+}
+
+/// Poll clipboard up to 10 times (50ms apart) until it matches `expected`.
+fn wait_clipboard_ready(expected: &str) {
+    for _ in 0..10 {
+        thread::sleep(Duration::from_millis(50));
+        if let Ok(content) = read_clipboard() {
+            if content.trim_end() == expected {
+                return;
+            }
+        }
+    }
+    log::warn!("clipboard did not match expected content after 500ms");
+}
+
+/// Read the current clipboard content.
+fn read_clipboard() -> Result<String> {
+    if is_command_available("wl-paste") {
+        return run_command("wl-paste", &["--no-newline"]);
+    }
+    if is_command_available("xclip") {
+        return run_command("xclip", &["-selection", "clipboard", "-o"]);
+    }
+    bail!("read_clipboard: neither wl-paste nor xclip is available");
 }
 
 /// Inject text using `wtype` (Wayland).
