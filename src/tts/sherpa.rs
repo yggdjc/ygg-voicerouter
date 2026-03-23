@@ -106,7 +106,7 @@ impl SherpaTts {
         Ok(Self {
             tts,
             speed: config.speed as f32,
-            sid: 0,
+            sid: config.sid,
         })
     }
 }

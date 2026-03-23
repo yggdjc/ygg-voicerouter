@@ -287,6 +287,7 @@ pub struct TtsConfig {
     pub model: String,
     pub model_dir: String,
     pub speed: f64,
+    pub sid: i32,
     pub mute_mic_during_playback: bool,
 }
 
@@ -298,6 +299,7 @@ impl Default for TtsConfig {
             model: "kokoro-tts".to_owned(),
             model_dir: "~/.cache/voicerouter/models".to_owned(),
             speed: 1.0,
+            sid: 3,
             mute_mic_during_playback: true,
         }
     }
