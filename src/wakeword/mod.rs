@@ -116,6 +116,15 @@ impl Actor for WakewordActor {
                     {
                         samples_since_last_asr = 0;
 
+                        // Skip ASR if window is too quiet (avoids hallucinations on silence).
+                        let peak = crate::audio::peak_rms(
+                            &window,
+                            self.config.audio.sample_rate,
+                        );
+                        if peak < self.config.audio.silence_threshold as f32 {
+                            continue;
+                        }
+
                         match asr.transcribe(&window, self.config.audio.sample_rate)
                         {
                             Ok(text) if !text.is_empty() => {
