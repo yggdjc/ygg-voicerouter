@@ -1,8 +1,9 @@
 //! Model download and path management for ASR models.
 //!
 //! Supported models:
-//! - `paraformer-zh`: Best Chinese offline model (bilingual zh/en).
+//! - `paraformer-zh`: Chinese offline model (bilingual zh/en).
 //! - `whisper-tiny-en`, `whisper-base-en`: Whisper variants for English.
+//! - `funasr-nano`: FunASR Nano 0.8B LLM-based model (zh/en/ja, with ITN).
 //!
 //! Model files are stored under a configurable directory (default:
 //! `~/.cache/voicerouter/models/<model_name>/`).
@@ -110,8 +111,31 @@ pub fn model_info(model_name: &str, model_dir: &Path) -> Result<ModelInfo> {
                 },
             ],
         }),
+        "funasr-nano" => Ok(ModelInfo {
+            name: model_name.to_owned(),
+            files: vec![
+                ModelFile {
+                    url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/\
+                          sherpa-onnx-funasr-nano-int8-2025-12-30.tar.bz2"
+                        .to_owned(),
+                    local_path: base.join("encoder_adaptor.int8.onnx"),
+                },
+                ModelFile {
+                    url: String::new(),
+                    local_path: base.join("llm.int8.onnx"),
+                },
+                ModelFile {
+                    url: String::new(),
+                    local_path: base.join("embedding.int8.onnx"),
+                },
+                ModelFile {
+                    url: String::new(),
+                    local_path: base.join("Qwen3-0.6B"),
+                },
+            ],
+        }),
         other => bail!(
-            "unsupported model '{other}'. Supported: paraformer-zh, whisper-tiny-en, whisper-base-en"
+            "unsupported model '{other}'. Supported: paraformer-zh, funasr-nano, whisper-tiny-en, whisper-base-en"
         ),
     }
 }
