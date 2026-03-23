@@ -31,7 +31,7 @@ use crate::config::PunctMode;
 ///   artefacts.
 /// - **Hiragana + Katakana** (U+3040..=U+30FF): Japanese syllabic scripts that
 ///   follow the same punctuation conventions as CJK ideographs.
-fn is_cjk_context(c: char) -> bool {
+pub(crate) fn is_cjk_context(c: char) -> bool {
     matches!(c,
         '\u{4E00}'..='\u{9FFF}'   // CJK Unified Ideographs
         | '\u{3400}'..='\u{4DBF}' // CJK Extension A

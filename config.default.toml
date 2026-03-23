@@ -18,7 +18,7 @@ max_record_seconds = 30
 denoise = true
 
 [asr]
-# Model identifier: "paraformer-zh", "whisper-tiny-en", "whisper-base-en"
+# Model identifier: "paraformer-zh", "funasr-nano", "whisper-tiny-en", "whisper-base-en"
 model = "paraformer-zh"
 model_dir = "~/.cache/voicerouter/models"
 # sherpa-rs 0.6 supports offline inference only; streaming is not available.
@@ -28,6 +28,8 @@ model_dir = "~/.cache/voicerouter/models"
 punct_mode = "strip_trailing"
 fullwidth_punct = true
 fix_english = true
+remove_fillers = true
+normalize_spoken = true
 
 [inject]
 # "auto", "clipboard_paste", "wtype", "xdotool"

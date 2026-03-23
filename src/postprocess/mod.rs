@@ -2,10 +2,12 @@
 //!
 //! The pipeline applies transformations in a fixed order:
 //!
-//! 1. **English fix** (if `config.fix_english`): merge broken ASR tokens.
-//! 2. **Fullwidth punctuation** (if `config.fullwidth_punct`): convert
+//! 1. **Filler removal** (if `config.remove_fillers`): strip onomatopoeic
+//!    hesitation markers (嗯、啊、呃 etc.) while preserving semantic uses.
+//! 2. **English fix** (if `config.fix_english`): merge broken ASR tokens.
+//! 3. **Fullwidth punctuation** (if `config.fullwidth_punct`): convert
 //!    ASCII punctuation to CJK fullwidth equivalents when adjacent to CJK.
-//! 3. **Punct mode**: strip trailing punct, compact spaces around punct, or
+//! 4. **Punct mode**: strip trailing punct, compact spaces around punct, or
 //!    leave as-is.
 //!
 //! # Examples
@@ -25,10 +27,14 @@
 //! ```
 
 pub mod english_fix;
+pub mod filler;
+pub mod normalize;
 pub mod punctuation;
 
 use crate::config::PostprocessConfig;
 use english_fix::fix_broken_english;
+use filler::remove_fillers;
+use normalize::normalize_spoken;
 use punctuation::{
     apply_punct_mode, fullwidth_to_half_in_ascii, half_to_fullwidth, space_cjk_ascii_boundary,
 };
@@ -36,9 +42,10 @@ use punctuation::{
 /// Run the post-processing pipeline on `text` according to `config`.
 ///
 /// Steps applied in order:
-/// 1. `fix_broken_english` — if `config.fix_english` is `true`
-/// 2. `half_to_fullwidth` — if `config.fullwidth_punct` is `true`
-/// 3. `apply_punct_mode` — always applied
+/// 1. `remove_fillers` — if `config.remove_fillers` is `true`
+/// 2. `fix_broken_english` — if `config.fix_english` is `true`
+/// 3. `half_to_fullwidth` — if `config.fullwidth_punct` is `true`
+/// 4. `apply_punct_mode` — always applied
 ///
 /// # Examples
 ///
@@ -66,9 +73,25 @@ use punctuation::{
 /// ```
 #[must_use]
 pub fn postprocess(text: &str, config: &PostprocessConfig) -> String {
+    // Remove hesitation fillers before other processing so downstream
+    // steps see clean text.
+    let defilled = if config.remove_fillers {
+        remove_fillers(text)
+    } else {
+        text.to_string()
+    };
+
+    // Normalize spoken forms (numbers, dots, percentages) before spacing
+    // so patterns like "二零零八年" remain contiguous.
+    let normalized = if config.normalize_spoken {
+        normalize_spoken(&defilled)
+    } else {
+        defilled
+    };
+
     // Insert spaces at CJK/ASCII boundaries so downstream steps
     // can tokenise English runs correctly (e.g. "了PTT模式" → "了 PTT 模式").
-    let spaced = space_cjk_ascii_boundary(text);
+    let spaced = space_cjk_ascii_boundary(&normalized);
 
     let step1 = if config.fix_english {
         fix_broken_english(&spaced)
@@ -103,6 +126,8 @@ mod tests {
             fix_english: fix,
             fullwidth_punct: fw,
             punct_mode: mode,
+            remove_fillers: false,
+            normalize_spoken: false, // disabled in existing tests to isolate other steps
             ..Default::default()
         }
     }

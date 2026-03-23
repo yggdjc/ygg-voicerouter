@@ -125,6 +125,11 @@ pub struct AsrConfig {
     pub model: String,
     /// Directory where model files are stored (tilde-expanded at runtime).
     pub model_dir: String,
+    /// Path to a hotwords file (one word per line) for biasing recognition.
+    /// Only effective with Paraformer models.
+    pub hotwords_file: Option<String>,
+    /// Score boost for hotwords (typical range: 1.5–3.0).
+    pub hotwords_score: f32,
 }
 
 impl Default for AsrConfig {
@@ -132,6 +137,8 @@ impl Default for AsrConfig {
         Self {
             model: "paraformer-zh".to_owned(),
             model_dir: "~/.cache/voicerouter/models".to_owned(),
+            hotwords_file: None,
+            hotwords_score: 2.0,
         }
     }
 }
@@ -146,6 +153,10 @@ pub struct PostprocessConfig {
     pub fullwidth_punct: bool,
     /// Attempt to fix spacing around inline English words.
     pub fix_english: bool,
+    /// Remove onomatopoeic hesitation fillers (嗯、啊、呃 etc.) from output.
+    pub remove_fillers: bool,
+    /// Normalize spoken forms to written (Chinese numbers→digits, 点→.).
+    pub normalize_spoken: bool,
     /// Restore punctuation using ct-transformer model (sherpa-onnx).
     pub restore_punctuation: bool,
     /// Path to the ct-transformer punctuation model directory.
@@ -158,6 +169,8 @@ impl Default for PostprocessConfig {
             punct_mode: PunctMode::default(),
             fullwidth_punct: true,
             fix_english: true,
+            remove_fillers: true,
+            normalize_spoken: true,
             restore_punctuation: true,
             punctuation_model: "~/.cache/voicerouter/models/ct-punc".to_owned(),
         }
