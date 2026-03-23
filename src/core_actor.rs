@@ -1,4 +1,5 @@
-//! CoreActor — owns audio pipeline, ASR engine, noise tracker, and postprocessing.
+//! CoreActor — owns ASR engine, noise tracker, and postprocessing.
+//! Receives audio chunks from a broadcast channel instead of owning an AudioPipeline.
 
 use std::time::{Duration, Instant};
 
@@ -6,7 +7,8 @@ use crossbeam::channel::{Receiver, Sender};
 
 use crate::actor::{Actor, Message};
 use crate::asr::AsrEngine;
-use crate::audio::{self, AudioPipeline, NoiseTracker};
+use crate::audio::{self, NoiseTracker};
+use crate::audio_source::AudioChunk;
 use crate::config::Config;
 use crate::postprocess::postprocess;
 use crate::sound;
@@ -22,12 +24,17 @@ enum CoreState {
 pub struct CoreActor {
     config: Config,
     preload: bool,
+    audio_rx: Receiver<AudioChunk>,
 }
 
 impl CoreActor {
     #[must_use]
-    pub fn new(config: Config, preload: bool) -> Self {
-        Self { config, preload }
+    pub fn new(
+        config: Config,
+        preload: bool,
+        audio_rx: Receiver<AudioChunk>,
+    ) -> Self {
+        Self { config, preload, audio_rx }
     }
 }
 
@@ -37,16 +44,8 @@ impl Actor for CoreActor {
     }
 
     fn run(self, inbox: Receiver<Message>, outbox: Sender<Message>) {
-        let mut audio = match AudioPipeline::new(&self.config.audio) {
-            Ok(a) => a,
-            Err(e) => {
-                log::error!("[core] failed to open audio: {e:#}");
-                return;
-            }
-        };
-
-        let initial_floor = audio::calibrate_silence(
-            &mut audio,
+        let initial_floor = audio::calibrate_silence_from_channel(
+            &self.audio_rx,
             self.config.audio.sample_rate,
             self.config.audio.silence_threshold as f32,
         );
@@ -71,6 +70,8 @@ impl Actor for CoreActor {
 
         let mut punctuator: Option<sherpa_onnx::OfflinePunctuation> = None;
         let mut recording_start: Option<Instant> = None;
+        let mut recording_buffer: Vec<f32> = Vec::new();
+        let denoise_enabled = self.config.audio.denoise;
         let mut state = CoreState::Idle;
         let max_record =
             Duration::from_secs(u64::from(self.config.audio.max_record_seconds));
@@ -79,57 +80,29 @@ impl Actor for CoreActor {
 
         loop {
             match state {
-                CoreState::Idle => match inbox.recv() {
-                    Ok(Message::StartListening) => {
-                        log::info!("[core] recording started");
-                        beep_if(&self.config, sound::beep_start);
-                        if let Err(e) = audio.start_recording() {
-                            log::error!("[core] start_recording failed: {e:#}");
-                            beep_if(&self.config, sound::beep_error);
-                            continue;
+                CoreState::Idle => {
+                    // Drain audio to prevent backpressure on AudioSource.
+                    while self.audio_rx.try_recv().is_ok() {}
+
+                    match inbox.recv() {
+                        Ok(Message::StartListening) => {
+                            log::info!("[core] recording started");
+                            beep_if(&self.config, sound::beep_start);
+                            recording_buffer.clear();
+                            recording_start = Some(Instant::now());
+                            state = CoreState::Recording;
                         }
-                        recording_start = Some(Instant::now());
-                        state = CoreState::Recording;
+                        Ok(Message::Shutdown) => break,
+                        _ => {}
                     }
-                    Ok(Message::Shutdown) => break,
-                    _ => {}
-                },
+                }
                 CoreState::Recording => {
                     crossbeam::select! {
-                        recv(inbox) -> msg => match msg {
-                            Ok(Message::StopListening) => {
-                                finalize_recording(
-                                    &mut audio, &mut asr_engine, &mut punctuator,
-                                    &self.config, &outbox, &mut recording_start,
-                                    &mut noise_tracker,
-                                );
-                                state = CoreState::Idle;
+                        recv(self.audio_rx) -> chunk => {
+                            if let Ok(chunk) = chunk {
+                                recording_buffer.extend_from_slice(&chunk);
                             }
-                            Ok(Message::CancelRecording) => {
-                                // Discard audio and restart recording silently
-                                // (no beep — Auto mode toggle transition).
-                                audio.stop_recording();
-                                log::info!(
-                                    "[core] recording cancelled, restarting for toggle"
-                                );
-                                if let Err(e) = audio.start_recording() {
-                                    log::error!("[core] restart failed: {e:#}");
-                                    recording_start = None;
-                                    state = CoreState::Idle;
-                                } else {
-                                    recording_start = Some(Instant::now());
-                                    // Stay in Recording state — no beep, no state change.
-                                }
-                            }
-                            Ok(Message::MuteInput) => {
-                                audio.stop_recording();
-                                recording_start = None;
-                                state = CoreState::Muted;
-                            }
-                            Ok(Message::Shutdown) => break,
-                            _ => {}
-                        },
-                        default(Duration::from_millis(10)) => {
+                            // Check recording timeout.
                             if let Some(start) = recording_start {
                                 if start.elapsed() >= max_record {
                                     log::warn!(
@@ -138,25 +111,65 @@ impl Actor for CoreActor {
                                         self.config.audio.max_record_seconds
                                     );
                                     finalize_recording(
-                                        &mut audio, &mut asr_engine,
-                                        &mut punctuator, &self.config,
-                                        &outbox, &mut recording_start,
+                                        &recording_buffer, denoise_enabled,
+                                        &mut asr_engine, &mut punctuator,
+                                        &self.config, &outbox,
+                                        recording_start.take().map_or(
+                                            0.0, |t| t.elapsed().as_secs_f32(),
+                                        ),
                                         &mut noise_tracker,
                                     );
+                                    recording_buffer.clear();
+                                    recording_start = None;
                                     outbox.send(Message::StopListening).ok();
                                     state = CoreState::Idle;
                                 }
                             }
                         }
+                        recv(inbox) -> msg => match msg {
+                            Ok(Message::StopListening) => {
+                                let elapsed = recording_start
+                                    .take()
+                                    .map_or(0.0, |t| t.elapsed().as_secs_f32());
+                                finalize_recording(
+                                    &recording_buffer, denoise_enabled,
+                                    &mut asr_engine, &mut punctuator,
+                                    &self.config, &outbox, elapsed,
+                                    &mut noise_tracker,
+                                );
+                                recording_buffer.clear();
+                                state = CoreState::Idle;
+                            }
+                            Ok(Message::CancelRecording) => {
+                                // Discard and restart silently (Auto mode toggle).
+                                recording_buffer.clear();
+                                recording_start = Some(Instant::now());
+                                log::info!(
+                                    "[core] recording cancelled, restarting for toggle"
+                                );
+                            }
+                            Ok(Message::MuteInput) => {
+                                recording_buffer.clear();
+                                recording_start = None;
+                                state = CoreState::Muted;
+                            }
+                            Ok(Message::Shutdown) => break,
+                            _ => {}
+                        },
                     }
                 }
-                CoreState::Muted => match inbox.recv() {
-                    Ok(Message::UnmuteInput) => {
-                        state = CoreState::Idle;
+                CoreState::Muted => {
+                    // Drain audio while muted.
+                    while self.audio_rx.try_recv().is_ok() {}
+
+                    match inbox.recv() {
+                        Ok(Message::UnmuteInput) => {
+                            state = CoreState::Idle;
+                        }
+                        Ok(Message::Shutdown) => break,
+                        _ => {}
                     }
-                    Ok(Message::Shutdown) => break,
-                    _ => {}
-                },
+                }
             }
         }
 
@@ -165,29 +178,34 @@ impl Actor for CoreActor {
 }
 
 fn finalize_recording(
-    audio: &mut AudioPipeline,
+    samples: &[f32],
+    denoise_enabled: bool,
     asr_engine: &mut Option<AsrEngine>,
     punctuator: &mut Option<sherpa_onnx::OfflinePunctuation>,
     config: &Config,
     outbox: &Sender<Message>,
-    recording_start: &mut Option<Instant>,
+    elapsed: f32,
     noise_tracker: &mut NoiseTracker,
 ) {
-    let elapsed = recording_start
-        .take()
-        .map_or(0.0, |t| t.elapsed().as_secs_f32());
     log::info!("[core] recording stopped ({elapsed:.1}s)");
     beep_if(config, sound::beep_done);
 
-    let samples = match audio.stop_recording() {
-        Some(s) => s,
-        None => return,
-    };
+    if samples.is_empty() {
+        return;
+    }
 
     if elapsed < MIN_RECORDING_SECS {
         log::info!("[core] too short ({elapsed:.1}s), discarding");
         return;
     }
+
+    // Apply denoise if enabled.
+    let samples = if denoise_enabled {
+        log::debug!("[core] applying denoise to {} samples", samples.len());
+        crate::audio::denoise::denoise(samples)
+    } else {
+        samples.to_vec()
+    };
 
     let threshold = noise_tracker.threshold();
     let peak = audio::peak_rms(&samples, config.audio.sample_rate);

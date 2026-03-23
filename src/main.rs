@@ -231,7 +231,9 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
 
     // Spawn actors.
     let hotkey_actor = HotkeyActor::new(config.hotkey.clone());
-    let core_actor = CoreActor::new(config.clone(), preload);
+    let (_core_audio_dummy_tx, core_audio_dummy_rx) =
+        crossbeam::channel::bounded::<voicerouter::audio_source::AudioChunk>(1);
+    let core_actor = CoreActor::new(config.clone(), preload, core_audio_dummy_rx);
 
     let bus_tx_hotkey = bus_tx.clone();
     let bus_tx_core = bus_tx.clone();
