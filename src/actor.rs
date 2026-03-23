@@ -16,7 +16,7 @@ pub enum Message {
     SpeakDone,
     MuteInput,
     UnmuteInput,
-    StartListening,
+    StartListening { wakeword: Option<String> },
     StopListening,
     /// Cancel active recording without transcribing (discard audio).
     CancelRecording,
@@ -34,7 +34,7 @@ impl Message {
             Self::SpeakDone => "SpeakDone",
             Self::MuteInput => "MuteInput",
             Self::UnmuteInput => "UnmuteInput",
-            Self::StartListening => "StartListening",
+            Self::StartListening { .. } => "StartListening",
             Self::StopListening => "StopListening",
             Self::CancelRecording => "CancelRecording",
             Self::Shutdown => "Shutdown",
@@ -113,7 +113,7 @@ mod tests {
 
     #[test]
     fn message_topic_returns_variant_name() {
-        assert_eq!(Message::StartListening.topic(), "StartListening");
+        assert_eq!(Message::StartListening { wakeword: None }.topic(), "StartListening");
         assert_eq!(Message::Shutdown.topic(), "Shutdown");
         let msg = Message::Transcript { text: "x".into(), raw: "x".into() };
         assert_eq!(msg.topic(), "Transcript");
@@ -124,9 +124,9 @@ mod tests {
         let (tx, rx) = crossbeam::channel::bounded(8);
         let mut bus = Bus::new();
         bus.subscribe("StartListening", tx);
-        bus.publish(Message::StartListening);
+        bus.publish(Message::StartListening { wakeword: None });
         let received = rx.try_recv().unwrap();
-        assert!(matches!(received, Message::StartListening));
+        assert!(matches!(received, Message::StartListening { .. }));
     }
 
     #[test]
@@ -144,6 +144,6 @@ mod tests {
     #[test]
     fn bus_no_subscriber_is_silent() {
         let bus = Bus::new();
-        bus.publish(Message::StartListening);
+        bus.publish(Message::StartListening { wakeword: None });
     }
 }

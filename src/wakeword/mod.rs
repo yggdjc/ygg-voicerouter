@@ -138,6 +138,7 @@ impl Actor for WakewordActor {
                                     emit_action(
                                         &self.config,
                                         &outbox,
+                                        phrase,
                                         remainder,
                                     );
                                     // Clear window after detection to avoid
@@ -158,10 +159,19 @@ impl Actor for WakewordActor {
     }
 }
 
-fn emit_action(config: &Config, outbox: &Sender<Message>, remainder: &str) {
+fn emit_action(
+    config: &Config,
+    outbox: &Sender<Message>,
+    phrase: &str,
+    remainder: &str,
+) {
     match config.wakeword.action {
         crate::config::WakewordAction::StartRecording => {
-            outbox.send(Message::StartListening).ok();
+            outbox
+                .send(Message::StartListening {
+                    wakeword: Some(phrase.to_string()),
+                })
+                .ok();
         }
         crate::config::WakewordAction::PipelinePassthrough => {
             if !remainder.is_empty() {

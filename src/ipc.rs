@@ -253,7 +253,7 @@ fn handle_request(
             JsonRpcResponse::ok(serde_json::json!({"status": "ok"}))
         }
         "recording.start" => {
-            outbox.send(Message::StartListening).ok();
+            outbox.send(Message::StartListening { wakeword: None }).ok();
             JsonRpcResponse::ok(serde_json::json!({"status": "ok"}))
         }
         "recording.stop" => {

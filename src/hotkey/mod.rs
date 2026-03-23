@@ -279,7 +279,7 @@ impl Actor for HotkeyActor {
             if let Some(event) = monitor.poll() {
                 match event {
                     HotkeyEvent::StartRecording => {
-                        outbox.send(Message::StartListening).ok();
+                        outbox.send(Message::StartListening { wakeword: None }).ok();
                     }
                     HotkeyEvent::StopRecording => {
                         outbox.send(Message::StopListening).ok();

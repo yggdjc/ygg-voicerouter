@@ -83,6 +83,7 @@ impl Actor for CoreActor {
         let mut speech_detected = false;
         // Cooldown after finalize to let inject complete before wakeword retriggers.
         let mut cooldown_until: Option<Instant> = None;
+        let mut active_wakeword: Option<String> = None;
 
         log::info!("[core] ready");
 
@@ -93,7 +94,7 @@ impl Actor for CoreActor {
                     while self.audio_rx.try_recv().is_ok() {}
 
                     match inbox.recv() {
-                        Ok(Message::StartListening) => {
+                        Ok(Message::StartListening { wakeword }) => {
                             // Ignore during cooldown (inject still in progress).
                             if let Some(until) = cooldown_until {
                                 if Instant::now() < until {
@@ -102,6 +103,7 @@ impl Actor for CoreActor {
                                 }
                                 cooldown_until = None;
                             }
+                            active_wakeword = wakeword;
                             log::info!("[core] recording started");
                             beep_if(&self.config, sound::beep_start);
                             recording_buffer.clear();
@@ -140,11 +142,12 @@ impl Actor for CoreActor {
                                                 &recording_buffer, denoise_enabled,
                                                 &mut asr_engine, &mut punctuator,
                                                 &self.config, &outbox, elapsed,
-                                                &mut noise_tracker,
+                                                &mut noise_tracker, &active_wakeword,
                                             );
                                             recording_buffer.clear();
                                             silence_since = None;
                                             speech_detected = false;
+                                            active_wakeword = None;
                                             // Cooldown: 2s for inject to complete.
                                             cooldown_until = Some(Instant::now() + Duration::from_secs(2));
                                             outbox.send(Message::StopListening).ok();
@@ -168,12 +171,13 @@ impl Actor for CoreActor {
                                         recording_start.take().map_or(
                                             0.0, |t| t.elapsed().as_secs_f32(),
                                         ),
-                                        &mut noise_tracker,
+                                        &mut noise_tracker, &active_wakeword,
                                     );
                                     recording_buffer.clear();
                                     recording_start = None;
                                     silence_since = None;
                                     speech_detected = false;
+                                    active_wakeword = None;
                                     outbox.send(Message::StopListening).ok();
                                     state = CoreState::Idle;
                                 }
@@ -188,11 +192,12 @@ impl Actor for CoreActor {
                                     &recording_buffer, denoise_enabled,
                                     &mut asr_engine, &mut punctuator,
                                     &self.config, &outbox, elapsed,
-                                    &mut noise_tracker,
+                                    &mut noise_tracker, &active_wakeword,
                                 );
                                 recording_buffer.clear();
                                 silence_since = None;
                                 speech_detected = false;
+                                active_wakeword = None;
                                 state = CoreState::Idle;
                             }
                             Ok(Message::CancelRecording) => {
@@ -245,6 +250,7 @@ fn finalize_recording(
     outbox: &Sender<Message>,
     elapsed: f32,
     noise_tracker: &mut NoiseTracker,
+    wakeword: &Option<String>,
 ) {
     log::info!("[core] recording stopped ({elapsed:.1}s)");
     beep_if(config, sound::beep_done);
@@ -314,9 +320,12 @@ fn finalize_recording(
 
     let text = postprocess(&with_punct, &config.postprocess);
 
-    // Strip wakeword prefix if present (wakeword-triggered recordings
-    // capture the wake phrase itself since the mic is shared).
-    let text = strip_wakeword_prefix(&text, &config.wakeword.phrases);
+    // Strip wakeword prefix only for wakeword-triggered recordings.
+    let text = if let Some(ref phrase) = wakeword {
+        strip_wakeword_prefix(&text, std::slice::from_ref(phrase))
+    } else {
+        text
+    };
 
     if text.is_empty() {
         log::info!("[core] transcribed: (only wakeword, no content)");
