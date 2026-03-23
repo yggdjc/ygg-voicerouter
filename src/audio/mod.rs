@@ -234,3 +234,54 @@ pub fn calibrate_silence(
     );
     threshold
 }
+
+/// Calibrate silence threshold from an audio broadcast channel.
+pub fn calibrate_silence_from_channel(
+    rx: &crossbeam::channel::Receiver<crate::audio_source::AudioChunk>,
+    sample_rate: u32,
+    floor: f32,
+) -> f32 {
+    log::info!("calibrating silence threshold (1s ambient sample)…");
+
+    let target_samples = sample_rate as usize; // 1 second
+    let mut collected = Vec::with_capacity(target_samples);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+
+    while collected.len() < target_samples {
+        if std::time::Instant::now() > deadline {
+            break;
+        }
+        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(chunk) => collected.extend_from_slice(&chunk),
+            Err(_) => continue,
+        }
+    }
+
+    if collected.is_empty() {
+        log::warn!("calibration got no samples — using floor {floor}");
+        return floor;
+    }
+
+    let window_size = (sample_rate as usize) / 20; // 50ms
+    let mut window_rms: Vec<f32> = collected
+        .chunks(window_size)
+        .filter(|w| w.len() == window_size)
+        .map(|w| compute_rms(w))
+        .collect();
+
+    if window_rms.is_empty() {
+        log::warn!("calibration too short for windowing — using floor {floor}");
+        return floor;
+    }
+
+    window_rms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = window_rms[window_rms.len() / 2];
+    let ceiling = 0.05_f32;
+    let threshold = (median * 2.0).clamp(floor, ceiling);
+
+    log::info!(
+        "noise floor (median RMS): {median:.4}, threshold: {threshold:.4} \
+         (floor: {floor}, ceiling: {ceiling})"
+    );
+    threshold
+}
