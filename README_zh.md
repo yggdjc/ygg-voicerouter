@@ -1,20 +1,23 @@
 # voicerouter
 
-**Linux 语音路由器** — 离线语音识别 + 可扩展的语音指令系统。单一二进制，纯 CPU 推理。
+**Linux 语音交互框架** — 离线语音识别 + Actor 架构 + 可组合 Pipeline + IPC + 可扩展 Handler。单一二进制，纯 CPU 推理。
 
 [English](README.md)
 
 ## 特性
 
 - **离线语音识别** — 基于 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)，支持 Paraformer（默认）和 FunASR Nano 模型
+- **Actor 架构** — 每个组件独立线程运行，通过中央消息总线通信
+- **可组合 Pipeline** — 链式 Handler + 条件匹配，或 DAG 工作流编排
+- **内置 Handler** — inject（输入文字）、shell（执行命令）、pipe（子进程管道）、http（API 调用）、transform（正则/模板变换）
+- **IPC** — Unix socket + JSON-RPC 2.0，支持外部工具集成
+- **TTS** — 语音合成 Actor，cpal 音频播放（sherpa-onnx 引擎，模型集成待完成）
+- **唤醒词** — 基于 ASR 的短语检测 Actor（音频源集成待完成）
 - **神经标点恢复** — ct-transformer 模型自动添加标点符号
-- **填充词去除** — 去除犹豫停顿产生的口水词（嗯、啊、呃），保留语义用法
-- **口语转书面语** — 中文数字转阿拉伯数字，"readme 点 md" 转 "readme.md"
+- **后处理** — 填充词去除、口语转书面语、CJK 标点转换、断裂英文修复
 - **三种热键模式** — 按住说话 (PTT)、切换、自动（短按切换/长按 PTT）
 - **文字注入** — 识别结果直接输入到当前聚焦的窗口（Wayland + X11）
-- **语音路由** — 基于前缀匹配的指令分发，支持 inject/shell 处理器
 - **中英文混合** — Paraformer 双语模型，中英文无缝切换
-- **CJK 后处理** — 全角标点转换、断裂英文 token 修复
 - **音频反馈** — 录音开始/结束时播放提示音
 - **systemd 服务** — 开机自启动
 
@@ -75,15 +78,68 @@ restore_punctuation = true     # ct-transformer 标点恢复
 - `strip_trailing` — 去除末尾标点（你好，世界）
 - `replace_space` — 标点替换为空格（你好，世界。再见 → 你好 世界 再见）
 
-### 语音路由
+### Pipeline
+
+Pipeline 替代旧版 `[router]` 配置。使用 handler + 条件匹配定义处理阶段：
 
 ```toml
-[[router.rules]]
-trigger = "搜索 "
+[[pipeline.stages]]
+name = "search"
 handler = "shell"
+command = "google-chrome 'https://www.google.com/search?q={text}'"
+condition = "starts_with:搜索"
+
+[[pipeline.stages]]
+name = "default"
+handler = "inject"
 ```
 
-说"搜索 天气预报"会执行 shell 命令 `天气预报`。不匹配任何规则时默认注入文字。
+可用 Handler：
+- `inject` — 将文字输入到聚焦窗口
+- `shell` — 执行 shell 命令（支持 `{text}` 模板）
+- `pipe` — 通过子进程 stdin/stdout 管道传输文本
+- `http` — 发送 HTTP 请求（GET/POST），支持 `{text}` 模板
+- `transform` — 正则替换或模板变换
+
+未配置 `[[pipeline.stages]]` 时自动使用默认 inject handler。旧版 `[[router.rules]]` 会自动迁移并显示弃用警告。
+
+### IPC
+
+```toml
+[ipc]
+enabled = true
+socket_path = ""          # 默认: $XDG_RUNTIME_DIR/voicerouter.sock
+max_connections = 8
+```
+
+JSON-RPC 方法：`pipeline.send`、`recording.start`、`recording.stop`、`status`、`events.subscribe`。
+
+示例：
+```bash
+echo '{"method":"status"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/voicerouter.sock
+```
+
+### TTS（实验性）
+
+```toml
+[tts]
+enabled = false
+engine = "sherpa-onnx"
+model = "vits-zh"
+speed = 1.0
+mute_mic_during_playback = true
+```
+
+### 唤醒词（实验性）
+
+```toml
+[wakeword]
+enabled = false
+phrases = ["小助手"]
+window_seconds = 2.0
+stride_seconds = 1.0
+action = "start_recording"   # start_recording | pipeline_passthrough
+```
 
 ### 注入方式
 
@@ -100,6 +156,7 @@ voicerouter --preload            # 预加载模型后启动
 voicerouter --test-audio         # 测试麦克风（录 3 秒，显示 RMS）
 voicerouter --test-inject "你好"  # 测试文字注入
 voicerouter setup                # 检查工具和模型
+voicerouter download [model]     # 下载模型文件
 voicerouter service install      # 安装 systemd 用户服务
 voicerouter service start        # 启动服务
 voicerouter service status       # 查看状态
@@ -107,17 +164,31 @@ voicerouter service status       # 查看状态
 
 ## 架构
 
+Actor 架构 + 中央消息总线：
+
 ```
-按键 → 录音 → [去噪] → ASR 识别 → 标点恢复 → 填充词去除 → 口语转写 → 后处理 → 路由分发
-                                                                                    ├─ inject（默认：注入文字）
-                                                                                    └─ shell（执行命令）
+┌──────────┐     ┌──────────┐     ┌──────────────┐     ┌──────────┐
+│ Hotkey   │────▶│          │────▶│   Pipeline    │────▶│  IPC     │
+│ Actor    │     │   Bus    │     │   Actor       │     │  Actor   │
+└──────────┘     │          │     │ (线性/DAG)    │     └──────────┘
+                 │ crossbeam│     └──────────────┘
+┌──────────┐     │ channels │     ┌──────────────┐     ┌──────────┐
+│  Core    │◀───▶│          │◀───▶│    TTS       │     │ Wakeword │
+│  Actor   │     │          │     │   Actor       │     │  Actor   │
+│(音频+ASR │     └──────────┘     └──────────────┘     └──────────┘
+│+后处理)  │
+└──────────┘
 ```
+
+每个 Actor 在独立线程运行，Bus 通过 topic 订阅实现 1:N 消息路由。
 
 ## 已知限制
 
 - 仅支持离线推理，不支持流式识别
 - RNNoise 去噪可能过于激进，建议保持 `denoise = false`
 - `wtype` 在 GNOME Wayland 下不可用（自动回退到 clipboard-paste）
+- TTS 引擎为 stub 实现，返回静音，需完成模型集成
+- 唤醒词 Actor 为骨架，需接入音频源实现持续检测
 
 ## 许可
 
