@@ -109,14 +109,11 @@ impl Actor for IpcActor {
         };
 
         // Set socket permissions to 0600.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(
-                &socket_path,
-                std::fs::Permissions::from_mode(0o600),
-            );
-        }
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(
+            &socket_path,
+            std::fs::Permissions::from_mode(0o600),
+        );
 
         listener.set_nonblocking(true).ok();
         log::info!("[ipc] listening on {socket_path}");
@@ -127,11 +124,13 @@ impl Actor for IpcActor {
 
         loop {
             // Check for shutdown or bus events.
-            if let Ok(msg) = inbox.try_recv() {
+            let mut shutdown = false;
+            while let Ok(msg) = inbox.try_recv() {
                 match msg {
                     Message::Shutdown => {
                         log::info!("[ipc] shutting down");
                         let _ = std::fs::remove_file(&socket_path);
+                        shutdown = true;
                         break;
                     }
                     Message::Transcript { ref text, ref raw } => {
@@ -145,6 +144,9 @@ impl Actor for IpcActor {
                     }
                     _ => {}
                 }
+            }
+            if shutdown {
+                break;
             }
 
             // Accept new connections.
