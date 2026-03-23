@@ -179,7 +179,6 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     let (hotkey_tx, hotkey_rx) = crossbeam::channel::bounded::<Message>(32);
     let (core_tx, core_rx) = crossbeam::channel::bounded::<Message>(32);
     let (pipeline_tx, pipeline_rx) = crossbeam::channel::bounded::<Message>(32);
-    let (ipc_tx, ipc_rx) = crossbeam::channel::bounded::<Message>(32);
     let (bus_tx, bus_rx) = crossbeam::channel::bounded::<Message>(128);
 
     // Set up bus subscriptions.
@@ -190,15 +189,22 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     bus.subscribe("CancelRecording", core_tx.clone());
     bus.subscribe("MuteInput", core_tx.clone());
     bus.subscribe("UnmuteInput", core_tx.clone());
-    bus.subscribe("SpeakDone", core_tx.clone());
     bus.subscribe("Transcript", pipeline_tx.clone());
-    bus.subscribe("Transcript", ipc_tx.clone());
     bus.subscribe("PipelineInput", pipeline_tx.clone());
-    bus.subscribe("PipelineOutput", ipc_tx.clone());
     bus.subscribe("Shutdown", hotkey_tx.clone());
     bus.subscribe("Shutdown", core_tx.clone());
     bus.subscribe("Shutdown", pipeline_tx.clone());
-    bus.subscribe("Shutdown", ipc_tx.clone());
+
+    // IPC subscriptions only when enabled.
+    let ipc_channels = if config.ipc.enabled {
+        let (ipc_tx, ipc_rx) = crossbeam::channel::bounded::<Message>(32);
+        bus.subscribe("Transcript", ipc_tx.clone());
+        bus.subscribe("PipelineOutput", ipc_tx.clone());
+        bus.subscribe("Shutdown", ipc_tx.clone());
+        Some((ipc_tx, ipc_rx))
+    } else {
+        None
+    };
 
     // Spawn bus router thread.
     let bus_handle = std::thread::Builder::new()
@@ -216,12 +222,10 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     // Spawn actors.
     let hotkey_actor = HotkeyActor::new(config.hotkey.clone());
     let core_actor = CoreActor::new(config.clone(), preload);
-    let ipc_actor = IpcActor::new(config.ipc.clone());
 
     let bus_tx_hotkey = bus_tx.clone();
     let bus_tx_core = bus_tx.clone();
     let bus_tx_pipeline = bus_tx.clone();
-    let bus_tx_ipc = bus_tx.clone();
 
     let hotkey_handle = std::thread::Builder::new()
         .name("hotkey".into())
@@ -236,9 +240,16 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
         .name("pipeline".into())
         .spawn(move || pipeline_actor.run(pipeline_rx, bus_tx_pipeline))?;
 
-    let ipc_handle = std::thread::Builder::new()
-        .name("ipc".into())
-        .spawn(move || ipc_actor.run(ipc_rx, bus_tx_ipc))?;
+    let ipc_handle = if let Some((_ipc_tx, ipc_rx)) = ipc_channels {
+        let ipc_actor = IpcActor::new(config.ipc.clone());
+        let bus_tx_ipc = bus_tx.clone();
+        Some(std::thread::Builder::new()
+            .name("ipc".into())
+            .spawn(move || ipc_actor.run(ipc_rx, bus_tx_ipc))?)
+    } else {
+        log::info!("IPC disabled");
+        None
+    };
 
     // Set up Ctrl+C to send Shutdown.
     let bus_tx_ctrlc = bus_tx.clone();
@@ -252,13 +263,13 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
 
     // Wait for actors to finish with 5s global timeout.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    for handle in [
-        hotkey_handle,
-        core_handle,
-        pipeline_handle,
-        ipc_handle,
-        bus_handle,
-    ] {
+    let mut handles: Vec<std::thread::JoinHandle<()>> =
+        vec![hotkey_handle, core_handle, pipeline_handle];
+    if let Some(h) = ipc_handle {
+        handles.push(h);
+    }
+    handles.push(bus_handle);
+    for handle in handles {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
             log::warn!("shutdown timeout exceeded, force-exiting");

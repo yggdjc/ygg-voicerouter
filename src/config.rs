@@ -383,17 +383,33 @@ impl Config {
             }
             return self.pipeline.stages.clone();
         }
-        self.router.rules.iter().enumerate().map(|(i, rule)| StageConfig {
-            name: format!("router_rule_{i}"),
-            handler: rule.handler.clone(),
-            command: rule.command.clone(),
-            condition: Some(format!("starts_with:{}", rule.trigger)),
+        if !self.router.rules.is_empty() {
+            log::warn!("[config] [router] is deprecated; migrate to [pipeline]");
+            return self.router.rules.iter().enumerate().map(|(i, rule)| StageConfig {
+                name: format!("router_rule_{i}"),
+                handler: rule.handler.clone(),
+                command: rule.command.clone(),
+                condition: Some(format!("starts_with:{}", rule.trigger)),
+                after: None,
+                url: None,
+                method: None,
+                body: None,
+                timeout: default_stage_timeout(),
+            }).collect();
+        }
+
+        // No pipeline config → default single inject handler.
+        vec![StageConfig {
+            name: "default".into(),
+            handler: "inject".into(),
+            command: None,
+            condition: None,
             after: None,
             url: None,
             method: None,
             body: None,
             timeout: default_stage_timeout(),
-        }).collect()
+        }]
     }
 
     /// Return the default config file path: `~/.config/voicerouter/config.toml`.
