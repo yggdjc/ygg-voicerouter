@@ -134,8 +134,17 @@ pub fn model_info(model_name: &str, model_dir: &Path) -> Result<ModelInfo> {
                 },
             ],
         }),
+        "ct-punc" => Ok(ModelInfo {
+            name: model_name.to_owned(),
+            files: vec![ModelFile {
+                url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/\
+                      sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8.tar.bz2"
+                    .to_owned(),
+                local_path: base.join("model.int8.onnx"),
+            }],
+        }),
         other => bail!(
-            "unsupported model '{other}'. Supported: paraformer-zh, funasr-nano, whisper-tiny-en, whisper-base-en"
+            "unsupported model '{other}'. Supported: paraformer-zh, funasr-nano, ct-punc, whisper-tiny-en, whisper-base-en"
         ),
     }
 }

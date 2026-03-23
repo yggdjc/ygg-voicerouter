@@ -53,6 +53,12 @@ struct Cli {
 enum Commands {
     /// Check tools, model files, and create default config if missing.
     Setup,
+    /// Download model files for the configured (or specified) model.
+    Download {
+        /// Model to download. Defaults to the configured ASR model + punctuation.
+        /// Options: paraformer-zh, funasr-nano, whisper-tiny-en, whisper-base-en, ct-punc, all
+        model: Option<String>,
+    },
     /// Control the background systemd user service.
     Service {
         /// Action: install | uninstall | start | stop | status
@@ -86,6 +92,7 @@ fn main() -> Result<()> {
     match cli.command {
         None => run_daemon(config, cli.preload),
         Some(Commands::Setup) => setup::run(&config),
+        Some(Commands::Download { model }) => setup::download(&config, model.as_deref()),
         Some(Commands::Service { action }) => service::run(&action),
     }
 }
