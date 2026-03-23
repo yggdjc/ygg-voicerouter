@@ -192,6 +192,9 @@ pub enum Message {
     UnmuteInput,
     StartListening,
     StopListening,
+    /// Cancel active recording without transcribing (discard audio).
+    /// Used by Auto-mode CancelAndToggle to discard tentative recording.
+    CancelRecording,
     Shutdown,
 }
 
@@ -209,6 +212,7 @@ impl Message {
             Self::UnmuteInput => "UnmuteInput",
             Self::StartListening => "StartListening",
             Self::StopListening => "StopListening",
+            Self::CancelRecording => "CancelRecording",
             Self::Shutdown => "Shutdown",
         }
     }
@@ -390,6 +394,7 @@ pub struct Stage {
     pub name: String,
     pub handler: Box<dyn Handler>,
     pub condition: Option<Condition>,
+    pub after: Option<String>,        // DAG dependency (Phase 4); None = root stage
     pub params: HashMap<String, String>,
     pub timeout: Duration,
 }
@@ -1100,6 +1105,7 @@ mod tests {
             name: name.into(),
             handler,
             condition: cond,
+            after: None,
             params: HashMap::new(),
             timeout: Duration::from_secs(10),
         }
@@ -1193,10 +1199,51 @@ pub mod handler;
 pub mod handlers;
 pub mod stage;
 
-use crossbeam::channel::Sender;
+use crossbeam::channel::{Receiver, Sender};
 
-use crate::actor::Message;
+use crate::actor::{Actor, Message};
 use stage::Stage;
+
+// ---- PipelineActor ----
+
+/// Actor that receives transcripts and runs the stage pipeline.
+pub struct PipelineActor {
+    stages: Vec<Stage>,
+}
+
+impl PipelineActor {
+    #[must_use]
+    pub fn new(stages: Vec<Stage>) -> Self {
+        Self { stages }
+    }
+}
+
+impl Actor for PipelineActor {
+    fn name(&self) -> &str {
+        "pipeline"
+    }
+
+    fn run(self, inbox: Receiver<Message>, outbox: Sender<Message>) {
+        log::info!("[pipeline] ready with {} stages", self.stages.len());
+
+        for msg in inbox {
+            match msg {
+                Message::Shutdown => break,
+                Message::Transcript { ref text, .. } => {
+                    execute_pipeline(&self.stages, text, &outbox);
+                }
+                Message::PipelineInput { ref text, .. } => {
+                    execute_pipeline(&self.stages, text, &outbox);
+                }
+                _ => {}
+            }
+        }
+
+        log::info!("[pipeline] stopped");
+    }
+}
+
+// ---- Pipeline execution ----
 
 /// Execute a linear pipeline of stages on the given text.
 ///
@@ -1684,8 +1731,8 @@ impl Actor for HotkeyActor {
                         outbox.send(Message::StopListening).ok();
                     }
                     HotkeyEvent::CancelAndToggle => {
-                        // Cancel current recording, then start fresh in toggle mode.
-                        outbox.send(Message::StopListening).ok();
+                        // Discard tentative recording (no transcription), then restart.
+                        outbox.send(Message::CancelRecording).ok();
                         outbox.send(Message::StartListening).ok();
                     }
                 }
@@ -1829,6 +1876,13 @@ impl Actor for CoreActor {
                                     &self.config, &outbox, &mut recording_start,
                                     &mut noise_tracker,
                                 );
+                                state = CoreState::Idle;
+                            }
+                            Ok(Message::CancelRecording) => {
+                                // Discard audio without transcribing.
+                                audio.stop_recording();
+                                recording_start = None;
+                                log::info!("[core] recording cancelled, audio discarded");
                                 state = CoreState::Idle;
                             }
                             Ok(Message::MuteInput) => {
@@ -2049,6 +2103,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
             name: sc.name.clone(),
             handler,
             condition,
+            after: sc.after.clone(),
             params,
             timeout: std::time::Duration::from_secs(sc.timeout),
         }
@@ -2066,8 +2121,10 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     bus.subscribe("StartListening", core_tx.clone());
     bus.subscribe("StopListening", core_tx.clone());
     bus.subscribe("StopListening", hotkey_tx.clone());
+    bus.subscribe("CancelRecording", core_tx.clone());
     bus.subscribe("MuteInput", core_tx.clone());
     bus.subscribe("UnmuteInput", core_tx.clone());
+    bus.subscribe("SpeakDone", core_tx.clone());
     bus.subscribe("Transcript", pipeline_tx.clone());
     bus.subscribe("Transcript", ipc_tx.clone());
     bus.subscribe("PipelineInput", pipeline_tx.clone());
@@ -2108,25 +2165,10 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
         .name("core".into())
         .spawn(move || core_actor.run(core_rx, bus_tx_core))?;
 
-    let stages = std::sync::Arc::new(stages);
-    let stages_clone = std::sync::Arc::clone(&stages);
+    let pipeline_actor = voicerouter::pipeline::PipelineActor::new(stages);
     let pipeline_handle = std::thread::Builder::new()
         .name("pipeline".into())
-        .spawn(move || {
-            for msg in pipeline_rx {
-                match msg {
-                    Message::Shutdown => break,
-                    Message::Transcript { ref text, .. } => {
-                        execute_pipeline(&stages_clone, text, &bus_tx_pipeline);
-                    }
-                    Message::PipelineInput { ref text, .. } => {
-                        execute_pipeline(&stages_clone, text, &bus_tx_pipeline);
-                    }
-                    _ => {}
-                }
-            }
-            log::info!("[pipeline] stopped");
-        })?;
+        .spawn(move || pipeline_actor.run(pipeline_rx, bus_tx_pipeline))?;
 
     let ipc_handle = std::thread::Builder::new()
         .name("ipc".into())
@@ -2142,13 +2184,18 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
 
     log::info!("voicerouter ready — all actors running");
 
-    // Wait for actors to finish (they exit on Shutdown).
-    let timeout = std::time::Duration::from_secs(5);
-    let _ = hotkey_handle.join();
-    let _ = core_handle.join();
-    let _ = pipeline_handle.join();
-    let _ = ipc_handle.join();
-    let _ = bus_handle.join();
+    // Wait for actors to finish with 5s global timeout.
+    // park_timeout unblocks after deadline even if threads haven't joined.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    for handle in [hotkey_handle, core_handle, pipeline_handle, ipc_handle, bus_handle] {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            log::warn!("shutdown timeout exceeded, force-exiting");
+            break;
+        }
+        // join() blocks but actors should exit within timeout on Shutdown.
+        let _ = handle.join();
+    }
 
     log::info!("voicerouter stopped");
     Ok(())
@@ -2425,14 +2472,9 @@ fn play_audio(samples: &[f32], sample_rate: u32) -> anyhow::Result<()> {
     let stream = device.build_output_stream(
         &config,
         move |data: &mut [f32], _| {
-            let current = pos_clone.load(std::sync::atomic::Ordering::Relaxed);
             for sample in data.iter_mut() {
-                if current + (sample as *const f32 as usize - data.as_ptr() as usize) / 4 < len {
-                    let idx = pos_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    *sample = if idx < len { samples[idx] } else { 0.0 };
-                } else {
-                    *sample = 0.0;
-                }
+                let idx = pos_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                *sample = if idx < len { samples[idx] } else { 0.0 };
             }
             if pos_clone.load(std::sync::atomic::Ordering::Relaxed) >= len {
                 let _ = done_tx.try_send(());
@@ -3224,7 +3266,13 @@ fn dag_pipeline_fan_out() {
             after: Some("classify".into()),
         },
     ];
-    // ... execute DAG and verify note_handler received the text
+    let (tx, _rx) = crossbeam::channel::bounded(8);
+    execute_dag(&stages, "test input", &tx);
+    let texts = received.lock().unwrap();
+    assert_eq!(texts.len(), 1);
+    // note_handler should receive the original input text since
+    // classify's output "note" matched OutputEq("note").
+    assert_eq!(texts[0], "test input");
 }
 ```
 

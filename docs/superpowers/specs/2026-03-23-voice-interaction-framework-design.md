@@ -86,6 +86,9 @@ enum Message {
     // Control
     StartListening,
     StopListening,
+    /// Cancel active recording without transcribing (discard audio).
+    /// Used by Auto-mode CancelAndToggle to avoid transcribing tentative recordings.
+    CancelRecording,
     Shutdown,
 }
 
@@ -154,6 +157,7 @@ Subscription table (registered at startup, immutable):
 |---------|------------|
 | `StartListening` | CoreActor |
 | `StopListening` | CoreActor, HotkeyActor (reset state machine on forced stop) |
+| `CancelRecording` | CoreActor (discard audio without transcribing) |
 | `Transcript` | PipelineActor, IpcActor (push to subscribers) |
 | `PipelineInput` | PipelineActor |
 | `PipelineOutput` | IpcActor (push to subscribers) |
