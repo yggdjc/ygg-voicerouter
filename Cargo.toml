@@ -6,7 +6,7 @@ description = "Voice router for Linux — offline ASR with pluggable handlers"
 license = "MIT"
 
 [dependencies]
-sherpa-rs = "0.6"
+sherpa-onnx = "1.12"
 cpal = "0.15"
 evdev = "0.12"
 nnnoiseless = "0.3"

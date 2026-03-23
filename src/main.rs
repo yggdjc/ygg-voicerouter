@@ -170,7 +170,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
         None
     };
 
-    let mut punctuator: Option<sherpa_rs::punctuate::Punctuation> = None;
+    let mut punctuator: Option<sherpa_onnx::OfflinePunctuation> = None;
     let mut recording_start: Option<Instant> = None;
 
     log::info!("ready — listening for hotkey '{}'", config.hotkey.key);
@@ -203,7 +203,7 @@ fn handle_event(
     event: HotkeyEvent,
     audio: &mut AudioPipeline,
     asr_engine: &mut Option<AsrEngine>,
-    punctuator: &mut Option<sherpa_rs::punctuate::Punctuation>,
+    punctuator: &mut Option<sherpa_onnx::OfflinePunctuation>,
     config: &Config,
     router: &Router,
     recording_start: &mut Option<Instant>,
@@ -252,7 +252,7 @@ const MIN_RECORDING_SECS: f32 = 0.3;
 fn on_stop_recording(
     audio: &mut AudioPipeline,
     asr_engine: &mut Option<AsrEngine>,
-    punctuator: &mut Option<sherpa_rs::punctuate::Punctuation>,
+    punctuator: &mut Option<sherpa_onnx::OfflinePunctuation>,
     config: &Config,
     router: &Router,
     recording_start: &mut Option<Instant>,
@@ -317,7 +317,7 @@ fn validate_recording(
 fn transcribe_and_process(
     samples: Vec<f32>,
     asr_engine: &mut Option<AsrEngine>,
-    punctuator: &mut Option<sherpa_rs::punctuate::Punctuation>,
+    punctuator: &mut Option<sherpa_onnx::OfflinePunctuation>,
     config: &Config,
 ) -> Option<String> {
     let text = match transcribe(samples, asr_engine, config) {
@@ -362,7 +362,7 @@ fn transcribe(
 /// Restore punctuation using ct-transformer model (lazy init).
 fn add_punctuation(
     text: &str,
-    punctuator: &mut Option<sherpa_rs::punctuate::Punctuation>,
+    punctuator: &mut Option<sherpa_onnx::OfflinePunctuation>,
     config: &Config,
 ) -> String {
     if !config.postprocess.restore_punctuation {
@@ -373,15 +373,17 @@ fn add_punctuation(
         *punctuator = init_punctuator(config);
     }
 
-    match punctuator.as_mut() {
-        Some(punc) => punc.add_punctuation(text),
+    match punctuator.as_ref() {
+        Some(punc) => punc
+            .add_punctuation(text)
+            .unwrap_or_else(|| text.to_owned()),
         None => text.to_owned(),
     }
 }
 
 fn init_punctuator(
     config: &Config,
-) -> Option<sherpa_rs::punctuate::Punctuation> {
+) -> Option<sherpa_onnx::OfflinePunctuation> {
     let model_path = match voicerouter::asr::models::expand_tilde(
         &config.postprocess.punctuation_model,
     ) {
@@ -400,14 +402,16 @@ fn init_punctuator(
         return None;
     }
     log::info!("loading punctuation model from {}", model_file.display());
-    let cfg = sherpa_rs::punctuate::PunctuationConfig {
-        model: model_file.to_string_lossy().into_owned(),
-        ..Default::default()
+    let cfg = sherpa_onnx::OfflinePunctuationConfig {
+        model: sherpa_onnx::OfflinePunctuationModelConfig {
+            ct_transformer: Some(model_file.to_string_lossy().into_owned()),
+            ..Default::default()
+        },
     };
-    match sherpa_rs::punctuate::Punctuation::new(cfg) {
-        Ok(p) => Some(p),
-        Err(e) => {
-            log::error!("punctuation model init failed: {e}");
+    match sherpa_onnx::OfflinePunctuation::create(&cfg) {
+        Some(p) => Some(p),
+        None => {
+            log::error!("punctuation model init failed");
             None
         }
     }

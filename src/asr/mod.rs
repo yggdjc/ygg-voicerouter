@@ -1,7 +1,7 @@
 //! ASR (Automatic Speech Recognition) module.
 //!
-//! Provides an offline ASR engine backed by [sherpa-onnx] via the
-//! [`sherpa-rs`](https://crates.io/crates/sherpa-rs) crate, plus model
+//! Provides an offline ASR engine backed by the
+//! [`sherpa-onnx`](https://crates.io/crates/sherpa-onnx) crate, plus model
 //! discovery and path management utilities.
 //!
 //!

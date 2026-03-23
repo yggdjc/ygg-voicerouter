@@ -1,10 +1,8 @@
-//! ASR engine wrapping sherpa-rs offline recognizers.
+//! ASR engine wrapping sherpa-onnx offline recognizers.
 //!
 //! # Design
 //!
-//! sherpa-rs 0.6 exposes **offline-only** recognizers; there is no
-//! streaming/online API for Paraformer in this version.
-//!
+//! sherpa-onnx provides offline recognizers for Paraformer and Whisper models.
 //! The public interface is intentionally simple:
 //!
 //! ```no_run
@@ -17,20 +15,14 @@
 //! ```
 
 use anyhow::{Context, Result};
+use sherpa_onnx::{
+    OfflineFunASRNanoModelConfig, OfflineModelConfig, OfflineParaformerModelConfig,
+    OfflineRecognizer, OfflineRecognizerConfig, OfflineWhisperModelConfig,
+};
 
 use crate::config::AsrConfig;
 
 use super::models::{get_model_paths, prepare_model_dir};
-
-// ---------------------------------------------------------------------------
-// Backend enum
-// ---------------------------------------------------------------------------
-
-/// Inner recognizer, one variant per supported model family.
-enum Backend {
-    Paraformer(sherpa_rs::paraformer::ParaformerRecognizer),
-    Whisper(sherpa_rs::whisper::WhisperRecognizer),
-}
 
 // ---------------------------------------------------------------------------
 // AsrEngine
@@ -40,10 +32,8 @@ enum Backend {
 ///
 /// Construct with [`AsrEngine::new`] and call [`AsrEngine::transcribe`] for
 /// each audio buffer.
-// Backend contains raw pointers; those don't implement Debug, so we skip
-// deriving it for the struct and implement a manual one that omits internals.
 pub struct AsrEngine {
-    backend: Backend,
+    recognizer: OfflineRecognizer,
     /// Original config retained for error messages.
     _model_name: String,
 }
@@ -80,10 +70,12 @@ impl AsrEngine {
             }
         }
 
-        let backend = build_backend(&config.model, &paths)?;
+        let recognizer_config = build_config(config, &paths)?;
+        let recognizer = OfflineRecognizer::create(&recognizer_config)
+            .ok_or_else(|| anyhow::anyhow!("failed to create recognizer for '{}'", config.model))?;
 
         Ok(Self {
-            backend,
+            recognizer,
             _model_name: config.model.clone(),
         })
     }
@@ -101,54 +93,108 @@ impl AsrEngine {
             return Ok(String::new());
         }
 
-        let text = match &mut self.backend {
-            Backend::Paraformer(rec) => rec.transcribe(sample_rate, audio).text,
-            Backend::Whisper(rec) => rec.transcribe(sample_rate, audio).text,
-        };
+        let stream = self.recognizer.create_stream();
+        stream.accept_waveform(sample_rate as i32, audio);
+        self.recognizer.decode(&stream);
 
-        Ok(text.trim().to_owned())
+        let text = stream
+            .get_result()
+            .map(|r| r.text.trim().to_owned())
+            .unwrap_or_default();
+
+        Ok(text)
     }
-
 }
 
 // ---------------------------------------------------------------------------
-// Backend construction
+// Config construction
 // ---------------------------------------------------------------------------
 
-fn build_backend(
-    model_name: &str,
+fn build_config(
+    config: &AsrConfig,
     paths: &super::models::ModelPaths,
-) -> Result<Backend> {
-    match model_name {
-        "paraformer-zh" => {
-            let cfg = sherpa_rs::paraformer::ParaformerConfig {
-                model: paths.model.to_string_lossy().into_owned(),
-                tokens: paths.tokens.to_string_lossy().into_owned(),
-                ..Default::default()
-            };
-            let rec = sherpa_rs::paraformer::ParaformerRecognizer::new(cfg)
-                .map_err(|e| anyhow::anyhow!("ParaformerRecognizer init failed: {e}"))?;
-            Ok(Backend::Paraformer(rec))
-        }
+) -> Result<OfflineRecognizerConfig> {
+    let model_path = paths.model.to_string_lossy().into_owned();
+    let tokens_path = paths.tokens.to_string_lossy().into_owned();
+
+    // Resolve hotwords file path if configured.
+    let hotwords_file = config
+        .hotwords_file
+        .as_deref()
+        .map(|p| {
+            let expanded = super::models::expand_tilde(p)
+                .map(|pb| pb.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| p.to_owned());
+            if !std::path::Path::new(&expanded).exists() {
+                log::warn!("hotwords file not found: {expanded}");
+            } else {
+                log::info!("loading hotwords from {expanded}");
+            }
+            expanded
+        });
+
+    let model_config = match config.model.as_str() {
+        "paraformer-zh" => OfflineModelConfig {
+            paraformer: OfflineParaformerModelConfig {
+                model: Some(model_path),
+            },
+            tokens: Some(tokens_path),
+            num_threads: 1,
+            provider: Some("cpu".into()),
+            ..Default::default()
+        },
         "whisper-tiny-en" | "whisper-base-en" => {
-            // extras[0] is the decoder
             let decoder = paths
                 .extras
                 .first()
-                .with_context(|| format!("missing decoder path for model '{model_name}'"))?;
-            let cfg = sherpa_rs::whisper::WhisperConfig {
-                encoder: paths.model.to_string_lossy().into_owned(),
-                decoder: decoder.to_string_lossy().into_owned(),
-                tokens: paths.tokens.to_string_lossy().into_owned(),
-                language: "en".to_owned(),
+                .with_context(|| {
+                    format!("missing decoder path for model '{}'", config.model)
+                })?;
+            OfflineModelConfig {
+                whisper: OfflineWhisperModelConfig {
+                    encoder: Some(model_path),
+                    decoder: Some(decoder.to_string_lossy().into_owned()),
+                    language: Some("en".into()),
+                    ..Default::default()
+                },
+                tokens: Some(tokens_path),
+                num_threads: 1,
+                provider: Some("cpu".into()),
                 ..Default::default()
-            };
-            let rec = sherpa_rs::whisper::WhisperRecognizer::new(cfg)
-                .map_err(|e| anyhow::anyhow!("WhisperRecognizer init failed: {e}"))?;
-            Ok(Backend::Whisper(rec))
+            }
+        }
+        "funasr-nano" => {
+            // ModelPaths mapping from model_info:
+            //   model = encoder_adaptor.int8.onnx
+            //   tokens = llm.int8.onnx (repurposed)
+            //   extras[0] = embedding.int8.onnx
+            //   extras[1] = Qwen3-0.6B (tokenizer directory)
+            let embedding = paths.extras.first().with_context(|| "missing embedding path")?;
+            let tokenizer = paths.extras.get(1).with_context(|| "missing tokenizer path")?;
+            OfflineModelConfig {
+                funasr_nano: OfflineFunASRNanoModelConfig {
+                    encoder_adaptor: Some(model_path),
+                    llm: Some(tokens_path), // repurposed: tokens slot holds llm path
+                    embedding: Some(embedding.to_string_lossy().into_owned()),
+                    tokenizer: Some(tokenizer.to_string_lossy().into_owned()),
+                    language: Some("zh".into()),
+                    ..Default::default()
+                },
+                num_threads: 2,
+                provider: Some("cpu".into()),
+                ..Default::default()
+            }
         }
         other => anyhow::bail!("no backend for model '{other}'"),
-    }
+    };
+
+    Ok(OfflineRecognizerConfig {
+        model_config,
+        decoding_method: Some("greedy_search".into()),
+        hotwords_file,
+        hotwords_score: config.hotwords_score,
+        ..Default::default()
+    })
 }
 
 // ---------------------------------------------------------------------------
