@@ -94,7 +94,12 @@ impl Router {
     pub fn dispatch(&self, text: &str) -> Result<()> {
         for rule in &self.rules {
             if text.starts_with(&rule.trigger) {
-                let payload = text[rule.trigger.len()..].trim_start();
+                let payload = text[rule.trigger.len()..]
+                    .trim_start()
+                    .trim_end_matches(|c: char| c.is_ascii_punctuation() || matches!(c,
+                        '，' | '。' | '？' | '！' | '；' | '：' | '、' | '…'
+                    ))
+                    .trim();
                 log::debug!(
                     "[router] trigger {:?} matched, dispatching to '{}'",
                     rule.trigger,
