@@ -21,6 +21,14 @@ pub enum Message {
     /// Cancel active recording without transcribing (discard audio).
     CancelRecording,
     Shutdown,
+    /// A speech segment detected by VAD (continuous listening mode).
+    SpeechSegment { samples: Vec<f32>, duration: f32 },
+    /// Request user confirmation for high-risk action (continuous mode).
+    ConfirmAction { text: String, stage: String },
+    /// User confirmed a pending high-risk action.
+    ActionConfirmed,
+    /// User rejected or timeout on a pending high-risk action.
+    ActionRejected,
 }
 
 impl Message {
@@ -38,6 +46,10 @@ impl Message {
             Self::StopListening => "StopListening",
             Self::CancelRecording => "CancelRecording",
             Self::Shutdown => "Shutdown",
+            Self::SpeechSegment { .. } => "SpeechSegment",
+            Self::ConfirmAction { .. } => "ConfirmAction",
+            Self::ActionConfirmed => "ActionConfirmed",
+            Self::ActionRejected => "ActionRejected",
         }
     }
 }
@@ -145,5 +157,19 @@ mod tests {
     fn bus_no_subscriber_is_silent() {
         let bus = Bus::new();
         bus.publish(Message::StartListening { wakeword: None });
+    }
+
+    #[test]
+    fn continuous_message_topics() {
+        assert_eq!(
+            Message::SpeechSegment { samples: vec![], duration: 0.0 }.topic(),
+            "SpeechSegment"
+        );
+        assert_eq!(
+            Message::ConfirmAction { text: "x".into(), stage: "y".into() }.topic(),
+            "ConfirmAction"
+        );
+        assert_eq!(Message::ActionConfirmed.topic(), "ActionConfirmed");
+        assert_eq!(Message::ActionRejected.topic(), "ActionRejected");
     }
 }
