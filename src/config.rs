@@ -62,6 +62,24 @@ pub enum InjectMethod {
     Xdotool,
 }
 
+/// Error handling policy for pipeline execution.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorPolicy {
+    #[default]
+    FailFast,
+    BestEffort,
+}
+
+/// Action to take when a wakeword is detected.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum WakewordAction {
+    #[default]
+    StartRecording,
+    PipelinePassthrough,
+}
+
 // ---------------------------------------------------------------------------
 // Sub-config structs
 // ---------------------------------------------------------------------------
@@ -199,6 +217,117 @@ pub struct RouterConfig {
     pub rules: Vec<Rule>,
 }
 
+/// A single pipeline stage definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StageConfig {
+    pub name: String,
+    pub handler: String,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub condition: Option<String>,
+    #[serde(default)]
+    pub after: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default = "default_stage_timeout")]
+    pub timeout: u64,
+}
+
+fn default_stage_timeout() -> u64 {
+    10
+}
+
+/// Pipeline execution configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PipelineConfig {
+    pub stages: Vec<StageConfig>,
+    pub error_policy: ErrorPolicy,
+    pub max_parallel_stages: usize,
+    pub max_concurrent_executions: usize,
+}
+
+impl Default for PipelineConfig {
+    fn default() -> Self {
+        Self {
+            stages: Vec::new(),
+            error_policy: ErrorPolicy::default(),
+            max_parallel_stages: 4,
+            max_concurrent_executions: 2,
+        }
+    }
+}
+
+/// IPC (Unix socket) server configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IpcConfig {
+    pub enabled: bool,
+    pub socket_path: String,
+    pub max_connections: usize,
+}
+
+impl Default for IpcConfig {
+    fn default() -> Self {
+        Self { enabled: true, socket_path: String::new(), max_connections: 8 }
+    }
+}
+
+/// Text-to-speech output configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TtsConfig {
+    pub enabled: bool,
+    pub engine: String,
+    pub model: String,
+    pub model_dir: String,
+    pub speed: f64,
+    pub mute_mic_during_playback: bool,
+}
+
+impl Default for TtsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            engine: "sherpa-onnx".to_owned(),
+            model: "vits-zh".to_owned(),
+            model_dir: "~/.cache/voicerouter/models".to_owned(),
+            speed: 1.0,
+            mute_mic_during_playback: true,
+        }
+    }
+}
+
+/// Wakeword detection configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WakewordConfig {
+    pub enabled: bool,
+    pub phrases: Vec<String>,
+    pub window_seconds: f64,
+    pub stride_seconds: f64,
+    pub action: WakewordAction,
+    pub model: String,
+}
+
+impl Default for WakewordConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            phrases: Vec::new(),
+            window_seconds: 2.0,
+            stride_seconds: 1.0,
+            action: WakewordAction::default(),
+            model: String::new(),
+        }
+    }
+}
+
 /// Audio feedback (earcon) configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -231,9 +360,42 @@ pub struct Config {
     pub inject: InjectConfig,
     pub router: RouterConfig,
     pub sound: SoundConfig,
+    pub pipeline: PipelineConfig,
+    pub ipc: IpcConfig,
+    pub tts: TtsConfig,
+    pub wakeword: WakewordConfig,
 }
 
 impl Config {
+    /// Return the effective pipeline stages, migrating from legacy `[router]` rules
+    /// if `[pipeline]` is not configured.
+    ///
+    /// If both sections are present, `[pipeline]` takes precedence and a deprecation
+    /// warning is emitted for `[router]`.
+    #[must_use]
+    pub fn effective_pipeline_stages(&self) -> Vec<StageConfig> {
+        if !self.pipeline.stages.is_empty() {
+            if !self.router.rules.is_empty() {
+                log::warn!(
+                    "[config] both [router] and [pipeline] defined; \
+                     [router] is deprecated and will be ignored"
+                );
+            }
+            return self.pipeline.stages.clone();
+        }
+        self.router.rules.iter().enumerate().map(|(i, rule)| StageConfig {
+            name: format!("router_rule_{i}"),
+            handler: rule.handler.clone(),
+            command: rule.command.clone(),
+            condition: Some(format!("starts_with:{}", rule.trigger)),
+            after: None,
+            url: None,
+            method: None,
+            body: None,
+            timeout: default_stage_timeout(),
+        }).collect()
+    }
+
     /// Return the default config file path: `~/.config/voicerouter/config.toml`.
     ///
     /// Returns `None` if the home directory cannot be determined.
@@ -327,5 +489,68 @@ mod tests {
         assert_eq!(config.hotkey.mode, HotkeyMode::Auto);
         assert_eq!(config.postprocess.punct_mode, PunctMode::StripTrailing);
         assert_eq!(config.inject.method, InjectMethod::Auto);
+    }
+
+    #[test]
+    fn pipeline_config_defaults() {
+        let config = Config::default();
+        assert!(config.pipeline.stages.is_empty());
+        assert_eq!(config.pipeline.error_policy, ErrorPolicy::FailFast);
+    }
+
+    #[test]
+    fn ipc_config_defaults() {
+        let config = Config::default();
+        assert!(config.ipc.enabled);
+        assert_eq!(config.ipc.max_connections, 8);
+    }
+
+    #[test]
+    fn pipeline_stage_deserializes() {
+        let toml = "[[pipeline.stages]]\nname = \"default\"\nhandler = \"inject\"\n";
+        let config: Config = toml::from_str(toml).expect("parse failed");
+        assert_eq!(config.pipeline.stages.len(), 1);
+        assert_eq!(config.pipeline.stages[0].name, "default");
+    }
+
+    #[test]
+    fn pipeline_stage_with_condition() {
+        let toml = "[[pipeline.stages]]\nname = \"search\"\nhandler = \"shell\"\ncommand = \"firefox {text}\"\ncondition = \"starts_with:搜索\"\n";
+        let config: Config = toml::from_str(toml).expect("parse failed");
+        assert_eq!(config.pipeline.stages[0].condition.as_deref(), Some("starts_with:搜索"));
+    }
+
+    #[test]
+    fn router_rules_migrate_to_pipeline() {
+        let toml = "[[router.rules]]\ntrigger = \"搜索\"\nhandler = \"shell\"\ncommand = \"firefox https://google.com/search?q={text}\"\n";
+        let config: Config = toml::from_str(toml).expect("parse failed");
+        let stages = config.effective_pipeline_stages();
+        assert_eq!(stages.len(), 1);
+        assert_eq!(stages[0].name, "router_rule_0");
+        assert_eq!(stages[0].handler, "shell");
+        assert_eq!(stages[0].condition.as_deref(), Some("starts_with:搜索"));
+    }
+
+    #[test]
+    fn pipeline_stages_take_precedence_over_router() {
+        let toml = "[[router.rules]]\ntrigger = \"old\"\nhandler = \"shell\"\n\n[[pipeline.stages]]\nname = \"new\"\nhandler = \"inject\"\n";
+        let config: Config = toml::from_str(toml).expect("parse failed");
+        let stages = config.effective_pipeline_stages();
+        assert_eq!(stages.len(), 1);
+        assert_eq!(stages[0].name, "new");
+    }
+
+    #[test]
+    fn tts_config_defaults() {
+        let config = Config::default();
+        assert!(!config.tts.enabled);
+        assert_eq!(config.tts.engine, "sherpa-onnx");
+    }
+
+    #[test]
+    fn wakeword_config_defaults() {
+        let config = Config::default();
+        assert!(!config.wakeword.enabled);
+        assert!(config.wakeword.phrases.is_empty());
     }
 }
