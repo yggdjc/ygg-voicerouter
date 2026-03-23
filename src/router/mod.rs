@@ -105,9 +105,14 @@ impl Router {
                     rule.trigger,
                     rule.handler.name()
                 );
-                // Apply command template if present, replacing {text}
+                // Apply command template if present, replacing {text}.
+                // URL-encode the payload to avoid shell injection from
+                // characters like single quotes in ASR output.
                 let final_payload = match &rule.command {
-                    Some(tpl) => tpl.replace("{text}", payload),
+                    Some(tpl) => {
+                        let encoded = url_encode(payload);
+                        tpl.replace("{text}", &encoded)
+                    }
                     None => payload.to_string(),
                 };
                 return rule.handler.handle(&final_payload);
@@ -124,6 +129,24 @@ impl Router {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Percent-encode a string for safe use in URLs and shell commands.
+fn url_encode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(b as char);
+            }
+            b' ' => result.push('+'),
+            _ => {
+                result.push('%');
+                result.push_str(&format!("{b:02X}"));
+            }
+        }
+    }
+    result
+}
 
 fn build_handler(name: &str, config: &Config) -> Box<dyn Handler> {
     let inject_method = config.inject.method;
