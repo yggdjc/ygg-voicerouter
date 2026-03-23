@@ -77,6 +77,7 @@ pub fn execute_pipeline(
             Ok(handler::HandlerResult::Forward(text)) => current_text = text,
             Ok(handler::HandlerResult::Emit(msg)) => {
                 outbox.send(msg).ok();
+                break;
             }
             Ok(handler::HandlerResult::ForwardAndEmit(text, msg)) => {
                 current_text = text;
