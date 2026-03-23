@@ -305,10 +305,6 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     log::info!("voicerouter ready — all actors running");
 
     // Wait for actors to finish with 5s global timeout.
-    // Stop audio source first so consumers don't block on recv.
-    audio_stop_tx.send(()).ok();
-    let _ = audio_handle.join();
-
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let mut handles: Vec<std::thread::JoinHandle<()>> =
         vec![hotkey_handle, core_handle, pipeline_handle, tts_handle, wakeword_handle];
@@ -324,6 +320,10 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
         }
         let _ = handle.join();
     }
+
+    // Stop audio source after all actors have exited.
+    audio_stop_tx.send(()).ok();
+    let _ = audio_handle.join();
 
     log::info!("voicerouter stopped");
     Ok(())
