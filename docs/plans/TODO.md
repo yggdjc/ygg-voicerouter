@@ -10,8 +10,8 @@ Features from Python ygg-voiceim not yet ported to Rust voicerouter.
 
 ## Voice Interaction Framework — needs real-world testing
 
-- [ ] **TTS sherpa-onnx integration** — SherpaTts currently returns silence; needs model download + VITS API integration
-- [ ] **Wakeword audio source** — WakewordActor skeleton ready; needs AudioSource channel for continuous mic access
+- [x] **TTS sherpa-onnx integration** — Kokoro v1.1 Chinese TTS integrated via OfflineTts API
+- [x] **Wakeword audio source** — AudioSource broadcast, CoreActor + WakewordActor share single cpal stream
 - [ ] **IPC client cleanup** — disconnected clients accumulate until next bus event triggers retain()
 - [ ] **DAG parallel execution** — topo sort done, execution is sequential; add crossbeam::scope for parallel siblings
 - [ ] **parse_condition to lib** — move from main.rs to pipeline::stage for testability
