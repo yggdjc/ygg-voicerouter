@@ -2,7 +2,20 @@
 
 Features from Python ygg-voiceim not yet ported to Rust voicerouter.
 
-## Pending
+## Pending — Continuous Listening (Jarvis mode)
+
+Spec: `docs/superpowers/specs/2026-03-24-continuous-listening-design.md`
+Plan: `docs/superpowers/plans/2026-03-24-continuous-listening.md`
+
+- [ ] **VAD Actor** — Silero VAD speech segment detection from AudioSource broadcast
+- [ ] **Speaker verification** — sherpa-onnx embedding + cosine similarity, `voicerouter enroll` CLI
+- [ ] **Local intent filter** — rule-based Command/Ambient/Uncertain classification
+- [ ] **LLM judge** — OpenAI-compatible API fallback for uncertain segments
+- [ ] **Risk-graded execution** — low-risk silent, high-risk beep + hotkey confirm
+- [ ] **ContinuousActor** — orchestrate VAD→Speaker→ASR→Intent→Execute pipeline
+- [ ] **Model download** — silero-vad and 3dspeaker model download support
+
+## Pending — Other
 
 - [ ] **Interactive setup wizard** — select mic, hotkey, model interactively (Python setup is more detailed)
 - [ ] **CT-Transformer disfluency detection** — replace rule-based filler removal with ct-transformer's built-in disfluency output (model already downloaded for punctuation restoration)
