@@ -144,6 +144,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     use voicerouter::pipeline::stage::Stage;
     use voicerouter::pipeline::{self, PipelineActor};
     use voicerouter::tts::TtsActor;
+    use voicerouter::wakeword::WakewordActor;
 
     // Build pipeline stages from config.
     let stage_configs = config.effective_pipeline_stages();
@@ -181,6 +182,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     let (core_tx, core_rx) = crossbeam::channel::bounded::<Message>(32);
     let (pipeline_tx, pipeline_rx) = crossbeam::channel::bounded::<Message>(32);
     let (tts_tx, tts_rx) = crossbeam::channel::bounded::<Message>(32);
+    let (wakeword_tx, wakeword_rx) = crossbeam::channel::bounded::<Message>(32);
     let (bus_tx, bus_rx) = crossbeam::channel::bounded::<Message>(128);
 
     // Set up bus subscriptions.
@@ -199,6 +201,9 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     bus.subscribe("Shutdown", core_tx.clone());
     bus.subscribe("Shutdown", pipeline_tx.clone());
     bus.subscribe("Shutdown", tts_tx.clone());
+    bus.subscribe("MuteInput", wakeword_tx.clone());
+    bus.subscribe("UnmuteInput", wakeword_tx.clone());
+    bus.subscribe("Shutdown", wakeword_tx.clone());
 
     // IPC subscriptions only when enabled.
     let ipc_channels = if config.ipc.enabled {
@@ -232,6 +237,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     let bus_tx_core = bus_tx.clone();
     let bus_tx_pipeline = bus_tx.clone();
     let bus_tx_tts = bus_tx.clone();
+    let bus_tx_wakeword = bus_tx.clone();
 
     let hotkey_handle = std::thread::Builder::new()
         .name("hotkey".into())
@@ -250,6 +256,11 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     let tts_handle = std::thread::Builder::new()
         .name("tts".into())
         .spawn(move || tts_actor.run(tts_rx, bus_tx_tts))?;
+
+    let wakeword_actor = WakewordActor::new(config.clone());
+    let wakeword_handle = std::thread::Builder::new()
+        .name("wakeword".into())
+        .spawn(move || wakeword_actor.run(wakeword_rx, bus_tx_wakeword))?;
 
     let ipc_handle = if let Some((_ipc_tx, ipc_rx)) = ipc_channels {
         let ipc_actor = IpcActor::new(config.ipc.clone());
@@ -275,7 +286,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     // Wait for actors to finish with 5s global timeout.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let mut handles: Vec<std::thread::JoinHandle<()>> =
-        vec![hotkey_handle, core_handle, pipeline_handle, tts_handle];
+        vec![hotkey_handle, core_handle, pipeline_handle, tts_handle, wakeword_handle];
     if let Some(h) = ipc_handle {
         handles.push(h);
     }
