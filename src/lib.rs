@@ -7,6 +7,7 @@ pub mod audio;
 pub mod config;
 pub mod hotkey;
 pub mod inject;
+pub mod ipc;
 pub mod postprocess;
 pub mod router;
 pub mod sound;
