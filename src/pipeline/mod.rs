@@ -1,5 +1,6 @@
 //! Composable handler pipeline.
 
+pub mod dag;
 pub mod handler;
 pub mod handlers;
 pub mod stage;
