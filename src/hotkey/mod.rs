@@ -221,3 +221,77 @@ impl HotkeyStateMachine {
 // ---------------------------------------------------------------------------
 
 pub use self::evdev::HotkeyMonitor;
+
+// ---------------------------------------------------------------------------
+// HotkeyActor — actor wrapper around HotkeyMonitor
+// ---------------------------------------------------------------------------
+
+use crate::actor::{Actor, Message};
+use crossbeam::channel::{Receiver, Sender};
+
+/// Actor wrapper around [`HotkeyMonitor`].
+///
+/// Polls the monitor in a loop and translates [`HotkeyEvent`]s into
+/// [`Message`]s on the actor bus. Responds to `StopListening` (resets the
+/// state machine) and `Shutdown` (exits the loop).
+pub struct HotkeyActor {
+    config: crate::config::HotkeyConfig,
+}
+
+impl HotkeyActor {
+    #[must_use]
+    pub fn new(config: crate::config::HotkeyConfig) -> Self {
+        Self { config }
+    }
+}
+
+impl Actor for HotkeyActor {
+    fn name(&self) -> &str {
+        "hotkey"
+    }
+
+    fn run(self, inbox: Receiver<Message>, outbox: Sender<Message>) {
+        let mut monitor = match HotkeyMonitor::new(&self.config) {
+            Ok(m) => m,
+            Err(e) => {
+                log::error!("[hotkey] failed to init: {e:#}");
+                return;
+            }
+        };
+
+        log::info!("[hotkey] listening for '{}'", self.config.key);
+
+        loop {
+            if let Ok(msg) = inbox.try_recv() {
+                match msg {
+                    Message::StopListening => {
+                        log::debug!("[hotkey] received StopListening, resetting state");
+                        monitor.reset_state();
+                    }
+                    Message::Shutdown => {
+                        log::info!("[hotkey] shutting down");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+
+            if let Some(event) = monitor.poll() {
+                match event {
+                    HotkeyEvent::StartRecording => {
+                        outbox.send(Message::StartListening).ok();
+                    }
+                    HotkeyEvent::StopRecording => {
+                        outbox.send(Message::StopListening).ok();
+                    }
+                    HotkeyEvent::CancelAndToggle => {
+                        outbox.send(Message::CancelRecording).ok();
+                        outbox.send(Message::StartListening).ok();
+                    }
+                }
+            }
+
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
