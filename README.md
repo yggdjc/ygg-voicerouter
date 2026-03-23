@@ -73,7 +73,7 @@ restore_punctuation = true     # ct-transformer punctuation restoration
 Punctuation modes:
 - `keep` — preserve all punctuation (你好，世界。)
 - `strip_trailing` — remove trailing punctuation (你好，世界)
-- `replace_space` — strip spaces around punctuation (你好，世界)
+- `replace_space` — replace punctuation with a single space (你好，世界。再见 → 你好 世界 再见)
 
 ### Voice Routing
 

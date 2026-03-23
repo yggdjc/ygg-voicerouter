@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn replace_space_mode() {
         let cfg = config(false, false, PunctMode::ReplaceSpace);
-        assert_eq!(postprocess("Hello. World", &cfg), "Hello.World");
+        assert_eq!(postprocess("Hello. World", &cfg), "Hello World");
     }
 
     #[test]

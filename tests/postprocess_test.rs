@@ -60,7 +60,7 @@ fn pipeline_full() {
 fn pipeline_replace_space() {
     assert_eq!(
         postprocess("Hello. World", &cfg(false, false, PunctMode::ReplaceSpace)),
-        "Hello.World"
+        "Hello World"
     );
 }
 

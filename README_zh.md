@@ -73,7 +73,7 @@ restore_punctuation = true     # ct-transformer 标点恢复
 标点模式说明：
 - `keep` — 保留所有标点（你好，世界。）
 - `strip_trailing` — 去除末尾标点（你好，世界）
-- `replace_space` — 去除标点后的空格（你好，世界）
+- `replace_space` — 标点替换为空格（你好，世界。再见 → 你好 世界 再见）
 
 ### 语音路由
 

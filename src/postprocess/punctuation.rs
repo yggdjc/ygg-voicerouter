@@ -266,7 +266,7 @@ const TRAILING_PUNCT: &[char] = &[
 ///
 /// assert_eq!(apply_punct_mode("Hello.", PunctMode::Keep), "Hello.");
 /// assert_eq!(apply_punct_mode("Hello.", PunctMode::StripTrailing), "Hello");
-/// assert_eq!(apply_punct_mode("Hello. World", PunctMode::ReplaceSpace), "Hello.World");
+/// assert_eq!(apply_punct_mode("Hello. World", PunctMode::ReplaceSpace), "Hello World");
 /// ```
 #[must_use]
 pub fn apply_punct_mode(text: &str, mode: PunctMode) -> String {
@@ -274,21 +274,25 @@ pub fn apply_punct_mode(text: &str, mode: PunctMode) -> String {
         PunctMode::Keep => text.to_owned(),
         PunctMode::StripTrailing => text.trim_end_matches(TRAILING_PUNCT).to_owned(),
         PunctMode::ReplaceSpace => {
-            // Remove a space that directly follows a sentence-final punctuation.
-            let chars: Vec<char> = text.chars().collect();
+            // Replace all punctuation with a single space. Collapse
+            // adjacent spaces so punct + existing space doesn't become
+            // double space.
             let mut output = String::with_capacity(text.len());
-            let mut i = 0;
-            while i < chars.len() {
-                let c = chars[i];
-                output.push(c);
-                // If this is a sentence-final punct and next char is a space, skip the space.
-                if TRAILING_PUNCT.contains(&c) && i + 1 < chars.len() && chars[i + 1] == ' ' {
-                    i += 2; // skip the space
-                    continue;
+            for c in text.chars() {
+                if TRAILING_PUNCT.contains(&c) {
+                    // Only add space if output doesn't already end with one
+                    if !output.ends_with(' ') {
+                        output.push(' ');
+                    }
+                } else if c == ' ' {
+                    if !output.ends_with(' ') {
+                        output.push(' ');
+                    }
+                } else {
+                    output.push(c);
                 }
-                i += 1;
             }
-            output
+            output.trim().to_owned()
         }
     }
 }
@@ -371,23 +375,40 @@ mod tests {
     fn apply_replace_space_removes_post_punct_space() {
         assert_eq!(
             apply_punct_mode("Hello. World", PunctMode::ReplaceSpace),
-            "Hello.World"
+            "Hello World"
         );
     }
 
     #[test]
-    fn apply_replace_space_no_trailing_space_unchanged() {
+    fn apply_replace_space_trailing_punct() {
         assert_eq!(
             apply_punct_mode("Hello.", PunctMode::ReplaceSpace),
-            "Hello."
+            "Hello"
         );
     }
 
     #[test]
-    fn apply_replace_space_multiple_punct_spaces() {
+    fn apply_replace_space_multiple_punct() {
         assert_eq!(
             apply_punct_mode("Hi. Hello. World", PunctMode::ReplaceSpace),
-            "Hi.Hello.World"
+            "Hi Hello World"
+        );
+    }
+
+    #[test]
+    fn apply_replace_space_fullwidth() {
+        assert_eq!(
+            apply_punct_mode("你好，世界。再见", PunctMode::ReplaceSpace),
+            "你好 世界 再见"
+        );
+    }
+
+    #[test]
+    fn apply_replace_space_no_double_space() {
+        // Punct + existing space should not become double space
+        assert_eq!(
+            apply_punct_mode("Hi,  World", PunctMode::ReplaceSpace),
+            "Hi World"
         );
     }
 }
