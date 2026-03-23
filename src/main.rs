@@ -3,20 +3,13 @@
 mod service;
 mod setup;
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-use voicerouter::asr::AsrEngine;
-use voicerouter::audio::{self, AudioPipeline, NoiseTracker};
+use voicerouter::audio::{self, AudioPipeline};
 use voicerouter::config::Config;
-use voicerouter::hotkey::{HotkeyEvent, HotkeyMonitor};
-use voicerouter::postprocess::postprocess;
-use voicerouter::router::Router;
-use voicerouter::sound;
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -138,323 +131,188 @@ fn run_test_inject(text: &str, config: &Config) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Main daemon loop
+// Main daemon loop (actor-based)
 // ---------------------------------------------------------------------------
 
 fn run_daemon(config: Config, preload: bool) -> Result<()> {
-    log::info!("voicerouter starting up");
+    log::info!("voicerouter starting up (actor mode)");
 
-    let running = Arc::new(AtomicBool::new(true));
-    let running_ctrlc = Arc::clone(&running);
-    ctrlc::set_handler(move || {
-        log::info!("received Ctrl+C — shutting down");
-        running_ctrlc.store(false, Ordering::SeqCst);
-    })
-    .context("failed to set Ctrl+C handler")?;
+    use voicerouter::actor::{Actor, Bus, Message};
+    use voicerouter::core_actor::CoreActor;
+    use voicerouter::hotkey::HotkeyActor;
+    use voicerouter::ipc::IpcActor;
+    use voicerouter::pipeline::stage::Stage;
+    use voicerouter::pipeline::{self, PipelineActor};
+    use voicerouter::tts::TtsActor;
+    use voicerouter::wakeword::WakewordActor;
 
-    let mut audio = AudioPipeline::new(&config.audio)
-        .context("failed to open audio device")?;
+    // Build pipeline stages from config.
+    let stage_configs = config.effective_pipeline_stages();
+    let stages: Vec<Stage> = stage_configs
+        .iter()
+        .map(|sc| {
+            let handler = pipeline::handlers::build_handler(&sc.handler, &config);
+            let condition = sc.condition.as_ref().map(|c| parse_condition(c));
+            let mut params = std::collections::HashMap::new();
+            if let Some(ref cmd) = sc.command {
+                params.insert("command".into(), cmd.clone());
+            }
+            if let Some(ref url) = sc.url {
+                params.insert("url".into(), url.clone());
+            }
+            if let Some(ref method) = sc.method {
+                params.insert("method".into(), method.clone());
+            }
+            if let Some(ref body) = sc.body {
+                params.insert("body".into(), body.clone());
+            }
+            Stage {
+                name: sc.name.clone(),
+                handler,
+                condition,
+                after: sc.after.clone(),
+                params,
+                timeout: std::time::Duration::from_secs(sc.timeout),
+            }
+        })
+        .collect();
 
-    let initial_floor = audio::calibrate_silence(
-        &mut audio,
-        config.audio.sample_rate,
-        config.audio.silence_threshold as f32,
-    );
-    let mut noise_tracker = NoiseTracker::new(
-        initial_floor,
-        config.audio.silence_threshold as f32,
-        config.audio.sample_rate,
-    );
+    // Create channels for each actor.
+    let (hotkey_tx, hotkey_rx) = crossbeam::channel::bounded::<Message>(32);
+    let (core_tx, core_rx) = crossbeam::channel::bounded::<Message>(32);
+    let (pipeline_tx, pipeline_rx) = crossbeam::channel::bounded::<Message>(32);
+    let (tts_tx, tts_rx) = crossbeam::channel::bounded::<Message>(32);
+    let (wakeword_tx, wakeword_rx) = crossbeam::channel::bounded::<Message>(32);
+    let (bus_tx, bus_rx) = crossbeam::channel::bounded::<Message>(128);
 
-    let mut monitor = HotkeyMonitor::new(&config.hotkey)
-        .context("failed to open hotkey monitor")?;
-    let router = Router::new(&config);
+    // Set up bus subscriptions.
+    let mut bus = Bus::new();
+    bus.subscribe("StartListening", core_tx.clone());
+    bus.subscribe("StopListening", core_tx.clone());
+    bus.subscribe("StopListening", hotkey_tx.clone());
+    bus.subscribe("CancelRecording", core_tx.clone());
+    bus.subscribe("MuteInput", core_tx.clone());
+    bus.subscribe("UnmuteInput", core_tx.clone());
+    bus.subscribe("Transcript", pipeline_tx.clone());
+    bus.subscribe("PipelineInput", pipeline_tx.clone());
+    bus.subscribe("SpeakRequest", tts_tx.clone());
+    bus.subscribe("SpeakDone", core_tx.clone());
+    bus.subscribe("Shutdown", hotkey_tx.clone());
+    bus.subscribe("Shutdown", core_tx.clone());
+    bus.subscribe("Shutdown", pipeline_tx.clone());
+    bus.subscribe("Shutdown", tts_tx.clone());
+    bus.subscribe("MuteInput", wakeword_tx.clone());
+    bus.subscribe("UnmuteInput", wakeword_tx.clone());
+    bus.subscribe("Shutdown", wakeword_tx.clone());
 
-    let mut asr_engine: Option<AsrEngine> = if preload {
-        log::info!("preloading ASR model '{}'", config.asr.model);
-        Some(AsrEngine::new(&config.asr).context("preload failed")?)
+    // IPC subscriptions only when enabled.
+    let ipc_channels = if config.ipc.enabled {
+        let (ipc_tx, ipc_rx) = crossbeam::channel::bounded::<Message>(32);
+        bus.subscribe("Transcript", ipc_tx.clone());
+        bus.subscribe("PipelineOutput", ipc_tx.clone());
+        bus.subscribe("Shutdown", ipc_tx.clone());
+        Some((ipc_tx, ipc_rx))
     } else {
         None
     };
 
-    let mut punctuator: Option<sherpa_onnx::OfflinePunctuation> = None;
-    let mut recording_start: Option<Instant> = None;
-
-    log::info!("ready — listening for hotkey '{}'", config.hotkey.key);
-
-    let max_record = Duration::from_secs(u64::from(config.audio.max_record_seconds));
-
-    while running.load(Ordering::SeqCst) {
-        // Check recording timeout before processing new events.
-        if let Some(start) = recording_start {
-            if start.elapsed() >= max_record {
-                log::warn!(
-                    "recording exceeded {}s limit, force-stopping",
-                    config.audio.max_record_seconds
-                );
-                on_stop_recording(
-                    &mut audio,
-                    &mut asr_engine,
-                    &mut punctuator,
-                    &config,
-                    &router,
-                    &mut recording_start,
-                    &mut noise_tracker,
-                );
-                monitor.reset_state();
+    // Spawn bus router thread.
+    let bus_handle = std::thread::Builder::new()
+        .name("bus".into())
+        .spawn(move || {
+            for msg in bus_rx {
+                if matches!(msg, Message::Shutdown) {
+                    bus.publish(msg);
+                    break;
+                }
+                bus.publish(msg);
             }
-        }
+        })?;
 
-        if let Some(event) = monitor.poll() {
-            handle_event(
-                event,
-                &mut audio,
-                &mut asr_engine,
-                &mut punctuator,
-                &config,
-                &router,
-                &mut recording_start,
-                &mut noise_tracker,
-            );
+    // Spawn actors.
+    let hotkey_actor = HotkeyActor::new(config.hotkey.clone());
+    let core_actor = CoreActor::new(config.clone(), preload);
+
+    let bus_tx_hotkey = bus_tx.clone();
+    let bus_tx_core = bus_tx.clone();
+    let bus_tx_pipeline = bus_tx.clone();
+    let bus_tx_tts = bus_tx.clone();
+    let bus_tx_wakeword = bus_tx.clone();
+
+    let hotkey_handle = std::thread::Builder::new()
+        .name("hotkey".into())
+        .spawn(move || hotkey_actor.run(hotkey_rx, bus_tx_hotkey))?;
+
+    let core_handle = std::thread::Builder::new()
+        .name("core".into())
+        .spawn(move || core_actor.run(core_rx, bus_tx_core))?;
+
+    let pipeline_actor = PipelineActor::new(stages);
+    let pipeline_handle = std::thread::Builder::new()
+        .name("pipeline".into())
+        .spawn(move || pipeline_actor.run(pipeline_rx, bus_tx_pipeline))?;
+
+    let tts_actor = TtsActor::new(config.tts.clone());
+    let tts_handle = std::thread::Builder::new()
+        .name("tts".into())
+        .spawn(move || tts_actor.run(tts_rx, bus_tx_tts))?;
+
+    let wakeword_actor = WakewordActor::new(config.clone());
+    let wakeword_handle = std::thread::Builder::new()
+        .name("wakeword".into())
+        .spawn(move || wakeword_actor.run(wakeword_rx, bus_tx_wakeword))?;
+
+    let ipc_handle = if let Some((_ipc_tx, ipc_rx)) = ipc_channels {
+        let ipc_actor = IpcActor::new(config.ipc.clone());
+        let bus_tx_ipc = bus_tx.clone();
+        Some(std::thread::Builder::new()
+            .name("ipc".into())
+            .spawn(move || ipc_actor.run(ipc_rx, bus_tx_ipc))?)
+    } else {
+        log::info!("IPC disabled");
+        None
+    };
+
+    // Set up Ctrl+C to send Shutdown.
+    let bus_tx_ctrlc = bus_tx.clone();
+    ctrlc::set_handler(move || {
+        log::info!("received Ctrl+C — shutting down");
+        bus_tx_ctrlc.send(Message::Shutdown).ok();
+    })
+    .context("failed to set Ctrl+C handler")?;
+
+    log::info!("voicerouter ready — all actors running");
+
+    // Wait for actors to finish with 5s global timeout.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut handles: Vec<std::thread::JoinHandle<()>> =
+        vec![hotkey_handle, core_handle, pipeline_handle, tts_handle, wakeword_handle];
+    if let Some(h) = ipc_handle {
+        handles.push(h);
+    }
+    handles.push(bus_handle);
+    for handle in handles {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            log::warn!("shutdown timeout exceeded, force-exiting");
+            break;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        let _ = handle.join();
     }
 
     log::info!("voicerouter stopped");
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Event handling
-// ---------------------------------------------------------------------------
-
-fn handle_event(
-    event: HotkeyEvent,
-    audio: &mut AudioPipeline,
-    asr_engine: &mut Option<AsrEngine>,
-    punctuator: &mut Option<sherpa_onnx::OfflinePunctuation>,
-    config: &Config,
-    router: &Router,
-    recording_start: &mut Option<Instant>,
-    noise_tracker: &mut NoiseTracker,
-) {
-    match event {
-        HotkeyEvent::StartRecording => {
-            on_start_recording(audio, config, recording_start);
-        }
-        HotkeyEvent::StopRecording => {
-            on_stop_recording(
-                audio, asr_engine, punctuator, config, router,
-                recording_start, noise_tracker,
-            );
-        }
-        HotkeyEvent::CancelAndToggle => {
-            log::info!("Auto short press — switching to toggle mode");
-            audio.stop_recording();
-            if let Err(e) = audio.start_recording() {
-                log::error!("failed to restart recording for toggle: {e:#}");
-                return;
-            }
-            *recording_start = Some(Instant::now());
-        }
-    }
-}
-
-fn on_start_recording(
-    audio: &mut AudioPipeline,
-    config: &Config,
-    recording_start: &mut Option<Instant>,
-) {
-    log::info!("Recording started");
-    beep_if(config, sound::beep_start);
-    if let Err(e) = audio.start_recording() {
-        log::error!("start_recording failed: {e:#}");
-        beep_if(config, sound::beep_error);
-        return;
-    }
-    *recording_start = Some(Instant::now());
-}
-
-/// Minimum recording duration in seconds — shorter clips are discarded.
-const MIN_RECORDING_SECS: f32 = 0.3;
-
-fn on_stop_recording(
-    audio: &mut AudioPipeline,
-    asr_engine: &mut Option<AsrEngine>,
-    punctuator: &mut Option<sherpa_onnx::OfflinePunctuation>,
-    config: &Config,
-    router: &Router,
-    recording_start: &mut Option<Instant>,
-    noise_tracker: &mut NoiseTracker,
-) {
-    let elapsed = recording_start
-        .take()
-        .map_or(0.0, |t| t.elapsed().as_secs_f32());
-    log::info!("Recording stopped ({elapsed:.1}s)");
-    beep_if(config, sound::beep_done);
-
-    let samples = match validate_recording(audio, elapsed, noise_tracker, config) {
-        Some(s) => s,
-        None => return,
-    };
-
-    let text = match transcribe_and_process(
-        samples, asr_engine, punctuator, config,
-    ) {
-        Some(t) => t,
-        None => return,
-    };
-
-    if let Err(e) = router.dispatch(&text) {
-        log::error!("dispatch failed: {e:#}");
-        beep_if(config, sound::beep_error);
-    }
-}
-
-/// Stop recording and validate: returns samples if audio is long enough
-/// and loud enough to process.
-fn validate_recording(
-    audio: &mut AudioPipeline,
-    elapsed: f32,
-    noise_tracker: &mut NoiseTracker,
-    config: &Config,
-) -> Option<Vec<f32>> {
-    let samples = audio.stop_recording()?;
-
-    if elapsed < MIN_RECORDING_SECS {
-        log::info!(
-            "recording too short ({elapsed:.1}s < {MIN_RECORDING_SECS}s), discarding"
-        );
-        return None;
-    }
-
-    let threshold = noise_tracker.threshold();
-    let peak = audio::peak_rms(&samples, config.audio.sample_rate);
-    if peak < threshold {
-        log::info!(
-            "recording is silence (peak RMS {peak:.4} < {threshold:.4}), \
-             discarding"
-        );
-        return None;
-    }
-
-    Some(samples)
-}
-
-/// Run ASR, punctuation restoration, and post-processing. Returns the
-/// final text or `None` on failure / empty result.
-fn transcribe_and_process(
-    samples: Vec<f32>,
-    asr_engine: &mut Option<AsrEngine>,
-    punctuator: &mut Option<sherpa_onnx::OfflinePunctuation>,
-    config: &Config,
-) -> Option<String> {
-    let text = match transcribe(samples, asr_engine, config) {
-        Ok(t) if !t.is_empty() => t,
-        Ok(_) => {
-            log::info!("Transcribed: (empty)");
-            return None;
-        }
-        Err(e) => {
-            log::error!("transcription failed: {e:#}");
-            beep_if(config, sound::beep_error);
-            return None;
-        }
-    };
-
-    let text = add_punctuation(&text, punctuator, config);
-    let processed = postprocess(&text, &config.postprocess);
-    log::info!("Transcribed: {processed:?}");
-    Some(processed)
-}
-
-// ---------------------------------------------------------------------------
-// ASR helpers
-// ---------------------------------------------------------------------------
-
-/// Run ASR on `samples`, lazily initialising the engine if needed.
-fn transcribe(
-    samples: Vec<f32>,
-    asr_engine: &mut Option<AsrEngine>,
-    config: &Config,
-) -> Result<String> {
-    if asr_engine.is_none() {
-        log::info!("initialising ASR engine (lazy)");
-        *asr_engine = Some(
-            AsrEngine::new(&config.asr).context("ASR engine init failed")?,
-        );
-    }
-    let engine = asr_engine.as_mut().expect("engine was just set");
-    engine.transcribe(&samples, config.audio.sample_rate)
-}
-
-/// Restore punctuation using ct-transformer model (lazy init).
-fn add_punctuation(
-    text: &str,
-    punctuator: &mut Option<sherpa_onnx::OfflinePunctuation>,
-    config: &Config,
-) -> String {
-    if !config.postprocess.restore_punctuation {
-        return text.to_owned();
-    }
-
-    if punctuator.is_none() {
-        *punctuator = init_punctuator(config);
-    }
-
-    match punctuator.as_ref() {
-        Some(punc) => punc
-            .add_punctuation(text)
-            .unwrap_or_else(|| text.to_owned()),
-        None => text.to_owned(),
-    }
-}
-
-fn init_punctuator(
-    config: &Config,
-) -> Option<sherpa_onnx::OfflinePunctuation> {
-    let model_path = match voicerouter::asr::models::expand_tilde(
-        &config.postprocess.punctuation_model,
-    ) {
-        Ok(p) => p,
-        Err(e) => {
-            log::warn!("punctuation model path error: {e}");
-            return None;
-        }
-    };
-    let model_file = model_path.join("model.int8.onnx");
-    if !model_file.exists() {
-        log::warn!(
-            "punctuation model not found at {}; skipping",
-            model_file.display()
-        );
-        return None;
-    }
-    log::info!("loading punctuation model from {}", model_file.display());
-    let cfg = sherpa_onnx::OfflinePunctuationConfig {
-        model: sherpa_onnx::OfflinePunctuationModelConfig {
-            ct_transformer: Some(model_file.to_string_lossy().into_owned()),
-            ..Default::default()
-        },
-    };
-    match sherpa_onnx::OfflinePunctuation::create(&cfg) {
-        Some(p) => Some(p),
-        None => {
-            log::error!("punctuation model init failed");
-            None
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Utility helpers
-// ---------------------------------------------------------------------------
-
-/// Play a beep if sound feedback is enabled, logging any failure.
-fn beep_if(config: &Config, f: fn() -> Result<()>) {
-    if config.sound.feedback {
-        if let Err(e) = f() {
-            log::debug!("beep failed: {e}");
-        }
+fn parse_condition(s: &str) -> voicerouter::pipeline::stage::Condition {
+    use voicerouter::pipeline::stage::Condition;
+    if let Some(prefix) = s.strip_prefix("starts_with:") {
+        Condition::StartsWith(prefix.to_string())
+    } else if let Some(val) = s.strip_prefix("output_eq:") {
+        Condition::OutputEq(val.to_string())
+    } else if let Some(val) = s.strip_prefix("output_contains:") {
+        Condition::OutputContains(val.to_string())
+    } else {
+        Condition::Always
     }
 }
