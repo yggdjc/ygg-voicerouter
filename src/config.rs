@@ -181,10 +181,14 @@ pub struct InjectConfig {
 /// A single routing rule mapping a trigger pattern to a handler.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rule {
-    /// Regex or prefix pattern matched against transcript text.
+    /// Prefix pattern matched against transcript text.
     pub trigger: String,
-    /// Handler name or command to invoke when matched.
+    /// Handler name: "inject" or "shell".
     pub handler: String,
+    /// Shell command template for "shell" handler. Use `{text}` as placeholder
+    /// for the payload (trigger-stripped text). If absent, payload is executed
+    /// as-is.
+    pub command: Option<String>,
 }
 
 /// Router configuration with an optional list of dispatch rules.

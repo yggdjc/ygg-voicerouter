@@ -179,6 +179,7 @@ fn real_router_inject_rule_dispatches() {
             rules: vec![ConfigRule {
                 trigger: "note ".to_owned(),
                 handler: "inject".to_owned(),
+                command: None,
             }],
         },
         ..Config::default()
@@ -194,6 +195,7 @@ fn real_router_shell_rule_executes_echo() {
             rules: vec![ConfigRule {
                 trigger: "run ".to_owned(),
                 handler: "shell".to_owned(),
+                command: None,
             }],
         },
         ..Config::default()
@@ -211,6 +213,7 @@ fn real_router_unknown_handler_falls_back_to_inject() {
             rules: vec![ConfigRule {
                 trigger: "x ".to_owned(),
                 handler: "nonexistent".to_owned(),
+                command: None,
             }],
         },
         ..Config::default()

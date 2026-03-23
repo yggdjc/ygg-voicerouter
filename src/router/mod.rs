@@ -32,6 +32,8 @@ use handlers::{inject::InjectHandler, shell::ShellHandler};
 struct Rule {
     trigger: String,
     handler: Box<dyn Handler>,
+    /// Optional shell command template with `{text}` placeholder.
+    command: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +75,7 @@ impl Router {
             .map(|r| Rule {
                 trigger: r.trigger.clone(),
                 handler: build_handler(&r.handler, config),
+                command: r.command.clone(),
             })
             .collect();
 
@@ -97,7 +100,12 @@ impl Router {
                     rule.trigger,
                     rule.handler.name()
                 );
-                return rule.handler.handle(payload);
+                // Apply command template if present, replacing {text}
+                let final_payload = match &rule.command {
+                    Some(tpl) => tpl.replace("{text}", payload),
+                    None => payload.to_string(),
+                };
+                return rule.handler.handle(&final_payload);
             }
         }
         log::debug!(
