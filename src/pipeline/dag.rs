@@ -3,6 +3,11 @@
 use std::collections::HashMap;
 
 use anyhow::{bail, Result};
+use crossbeam::channel::Sender;
+
+use super::handler::HandlerResult;
+use super::stage::Stage;
+use crate::actor::Message;
 
 /// Topological sort of stages. Returns execution order as indices.
 pub fn topo_sort(
@@ -48,6 +53,65 @@ pub fn topo_sort(
     }
 
     Ok(order)
+}
+
+/// Execute a DAG of stages. Stages with `after` set depend on their parent.
+/// Stages at the same depth level can run in parallel via crossbeam::scope.
+pub fn execute_dag(
+    stages: &[Stage],
+    text: &str,
+    outbox: &Sender<Message>,
+) {
+    let stage_names: Vec<&str> = stages.iter().map(|s| s.name.as_str()).collect();
+    let deps: Vec<Option<&str>> = stages.iter()
+        .map(|s| s.after.as_deref())
+        .collect();
+
+    let order = match topo_sort(&stage_names, &deps) {
+        Ok(o) => o,
+        Err(e) => {
+            log::error!("[pipeline/dag] {e}");
+            return;
+        }
+    };
+
+    let mut results: HashMap<String, String> = HashMap::new();
+
+    for &idx in &order {
+        let stage = &stages[idx];
+
+        if let Some(ref cond) = stage.condition {
+            if !cond.matches_with_results(text, &results) {
+                continue;
+            }
+        }
+
+        let payload = stage.condition.as_ref()
+            .and_then(|c| c.strip_prefix(text))
+            .unwrap_or(text);
+
+        let ctx = stage.to_context();
+        match stage.handler.handle(payload, &ctx) {
+            Ok(HandlerResult::Forward(output)) => {
+                results.insert(stage.name.clone(), output);
+            }
+            Ok(HandlerResult::Emit(msg)) => {
+                outbox.send(msg).ok();
+            }
+            Ok(HandlerResult::ForwardAndEmit(output, msg)) => {
+                results.insert(stage.name.clone(), output);
+                outbox.send(msg).ok();
+            }
+            Ok(HandlerResult::Done) => break,
+            Err(e) => {
+                log::error!(
+                    "[pipeline/dag] stage '{}' failed: {e:#}",
+                    stage.name,
+                );
+                break;
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -29,16 +29,20 @@ impl Actor for PipelineActor {
     }
 
     fn run(self, inbox: Receiver<Message>, outbox: Sender<Message>) {
-        log::info!("[pipeline] ready with {} stages", self.stages.len());
+        let has_dag = self.stages.iter().any(|s| s.after.is_some());
+        let mode = if has_dag { "dag" } else { "linear" };
+        log::info!("[pipeline] ready with {} stages (mode: {mode})", self.stages.len());
 
         for msg in inbox {
             match msg {
                 Message::Shutdown => break,
-                Message::Transcript { ref text, .. } => {
-                    execute_pipeline(&self.stages, text, &outbox);
-                }
-                Message::PipelineInput { ref text, .. } => {
-                    execute_pipeline(&self.stages, text, &outbox);
+                Message::Transcript { ref text, .. }
+                | Message::PipelineInput { ref text, .. } => {
+                    if has_dag {
+                        dag::execute_dag(&self.stages, text, &outbox);
+                    } else {
+                        execute_pipeline(&self.stages, text, &outbox);
+                    }
                 }
                 _ => {}
             }
@@ -197,6 +201,50 @@ mod tests {
         execute_pipeline(&stages, "hello", &tx);
         let msg = rx.try_recv().unwrap();
         assert!(matches!(msg, Message::SpeakRequest { text, .. } if text == "spoken"));
+    }
+
+    #[test]
+    fn dag_pipeline_fan_out() {
+        use crate::pipeline::dag::execute_dag;
+
+        struct ClassifyHandler;
+        impl Handler for ClassifyHandler {
+            fn name(&self) -> &str { "classify" }
+            fn handle(
+                &self,
+                _text: &str,
+                _ctx: &StageContext,
+            ) -> anyhow::Result<HandlerResult> {
+                Ok(HandlerResult::Forward("note".into()))
+            }
+        }
+
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let stages = vec![
+            Stage {
+                name: "classify".into(),
+                handler: Box::new(ClassifyHandler),
+                condition: None,
+                params: HashMap::new(),
+                timeout: Duration::from_secs(10),
+                after: None,
+            },
+            Stage {
+                name: "note_handler".into(),
+                handler: Box::new(RecordingHandler {
+                    received: Arc::clone(&received),
+                }),
+                condition: Some(Condition::OutputEq("note".into())),
+                params: HashMap::new(),
+                timeout: Duration::from_secs(10),
+                after: Some("classify".into()),
+            },
+        ];
+        let (tx, _rx) = crossbeam::channel::bounded(8);
+        execute_dag(&stages, "test input", &tx);
+        let texts = received.lock().unwrap();
+        assert_eq!(texts.len(), 1);
+        assert_eq!(texts[0], "test input");
     }
 
     #[test]
