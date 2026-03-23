@@ -126,9 +126,10 @@ pub fn clipboard_paste(text: &str) -> Result<()> {
     thread::sleep(Duration::from_millis(100));
 
     // Restore original clipboard in background to avoid blocking.
+    // Wait 1s to ensure target app has fully processed the paste event.
     if let Some(original) = saved {
         thread::spawn(move || {
-            thread::sleep(Duration::from_millis(200));
+            thread::sleep(Duration::from_millis(1000));
             if let Err(e) = write_clipboard(&original) {
                 log::debug!("clipboard restore failed: {e}");
             }
