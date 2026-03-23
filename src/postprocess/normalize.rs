@@ -256,7 +256,7 @@ fn try_convert_number(chars: &[char], start: usize) -> Option<(String, usize)> {
 
     // Arithmetic number
     if let Some(value) = parse_arithmetic(&span) {
-        return Some((value.to_string(), span_len));
+        return Some((format_with_commas(value), span_len));
     }
 
     None
@@ -339,7 +339,7 @@ fn try_parse_decimal(span: &[char]) -> Option<String> {
     let int_str = if integer_part.len() == 1 {
         digit_value(integer_part[0])?.to_string()
     } else if let Some(v) = parse_arithmetic(integer_part) {
-        v.to_string()
+        format_with_commas(v)
     } else {
         // Sequential
         integer_part
@@ -514,7 +514,7 @@ fn parse_number_at(text: &str) -> (String, usize) {
 
     // Try arithmetic
     if let Some(value) = parse_arithmetic(&span) {
-        return (value.to_string(), byte_len);
+        return (format_with_commas(value), byte_len);
     }
 
     // Sequential
@@ -530,6 +530,29 @@ fn parse_number_at(text: &str) -> (String, usize) {
 }
 
 // ---------------------------------------------------------------------------
+/// Format an integer with comma separators every 3 digits.
+/// e.g. 1000000 → "1,000,000"
+fn format_with_commas(n: u64) -> String {
+    let s = n.to_string();
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    if len <= 3 {
+        return s;
+    }
+    let mut result = String::with_capacity(len + len / 3);
+    let first_group = len % 3;
+    if first_group > 0 {
+        result.push_str(&s[..first_group]);
+    }
+    for (i, chunk) in s[first_group..].as_bytes().chunks(3).enumerate() {
+        if i > 0 || first_group > 0 {
+            result.push(',');
+        }
+        result.push_str(std::str::from_utf8(chunk).unwrap());
+    }
+    result
+}
+
 // Unit tests
 // ---------------------------------------------------------------------------
 
@@ -653,17 +676,17 @@ mod tests {
 
     #[test]
     fn arith_3500() {
-        assert_eq!(normalize_spoken("三千五百"), "3500");
+        assert_eq!(normalize_spoken("三千五百"), "3,500");
     }
 
     #[test]
     fn arith_35million() {
-        assert_eq!(normalize_spoken("三千五百万"), "35000000");
+        assert_eq!(normalize_spoken("三千五百万"), "35,000,000");
     }
 
     #[test]
     fn arith_10000() {
-        assert_eq!(normalize_spoken("一万"), "10000");
+        assert_eq!(normalize_spoken("一万"), "10,000");
     }
 
     #[test]
@@ -683,12 +706,12 @@ mod tests {
 
     #[test]
     fn arith_100000() {
-        assert_eq!(normalize_spoken("十万"), "100000");
+        assert_eq!(normalize_spoken("十万"), "100,000");
     }
 
     #[test]
     fn arith_123million() {
-        assert_eq!(normalize_spoken("一亿两千三百万"), "123000000");
+        assert_eq!(normalize_spoken("一亿两千三百万"), "123,000,000");
     }
 
     #[test]
@@ -698,7 +721,7 @@ mod tests {
 
     #[test]
     fn arith_1003_placeholder() {
-        assert_eq!(normalize_spoken("一千零三"), "1003");
+        assert_eq!(normalize_spoken("一千零三"), "1,003");
     }
 
     #[test]
@@ -708,7 +731,7 @@ mod tests {
 
     #[test]
     fn arith_10001_placeholder() {
-        assert_eq!(normalize_spoken("一万零一"), "10001");
+        assert_eq!(normalize_spoken("一万零一"), "10,001");
     }
 
     // -- Decimals --
@@ -833,8 +856,8 @@ mod tests {
     #[test]
     fn mixed_money() {
         assert_eq!(
-            normalize_spoken("他花了三千五百块"),
-            "他花了3500块"
+            normalize_spoken("他花了三千五百块"),  // 3,500 with commas
+            "他花了3,500块"
         );
     }
 
