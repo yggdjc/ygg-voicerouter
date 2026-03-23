@@ -117,22 +117,6 @@ fn build_config(
     let model_path = paths.model.to_string_lossy().into_owned();
     let tokens_path = paths.tokens.to_string_lossy().into_owned();
 
-    // Resolve hotwords file path if configured.
-    let hotwords_file = config
-        .hotwords_file
-        .as_deref()
-        .map(|p| {
-            let expanded = super::models::expand_tilde(p)
-                .map(|pb| pb.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| p.to_owned());
-            if !std::path::Path::new(&expanded).exists() {
-                log::warn!("hotwords file not found: {expanded}");
-            } else {
-                log::info!("loading hotwords from {expanded}");
-            }
-            expanded
-        });
-
     let model_config = match config.model.as_str() {
         "paraformer-zh" => OfflineModelConfig {
             paraformer: OfflineParaformerModelConfig {
@@ -191,8 +175,6 @@ fn build_config(
     Ok(OfflineRecognizerConfig {
         model_config,
         decoding_method: Some("greedy_search".into()),
-        hotwords_file,
-        hotwords_score: config.hotwords_score,
         ..Default::default()
     })
 }

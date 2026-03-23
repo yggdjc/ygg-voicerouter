@@ -125,11 +125,6 @@ pub struct AsrConfig {
     pub model: String,
     /// Directory where model files are stored (tilde-expanded at runtime).
     pub model_dir: String,
-    /// Path to a hotwords file (one word per line) for biasing recognition.
-    /// Only effective with Paraformer models.
-    pub hotwords_file: Option<String>,
-    /// Score boost for hotwords (typical range: 1.5–3.0).
-    pub hotwords_score: f32,
 }
 
 impl Default for AsrConfig {
@@ -137,8 +132,6 @@ impl Default for AsrConfig {
         Self {
             model: "paraformer-zh".to_owned(),
             model_dir: "~/.cache/voicerouter/models".to_owned(),
-            hotwords_file: None,
-            hotwords_score: 2.0,
         }
     }
 }
