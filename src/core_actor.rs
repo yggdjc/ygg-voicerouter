@@ -14,6 +14,8 @@ use crate::postprocess::postprocess;
 use crate::sound;
 
 const MIN_RECORDING_SECS: f32 = 0.3;
+/// Consecutive silence duration (seconds) before auto-stopping recording.
+const SILENCE_AUTO_STOP_SECS: f32 = 1.5;
 
 enum CoreState {
     Idle,
@@ -75,6 +77,12 @@ impl Actor for CoreActor {
         let mut state = CoreState::Idle;
         let max_record =
             Duration::from_secs(u64::from(self.config.audio.max_record_seconds));
+        let silence_threshold = noise_tracker.threshold();
+        let silence_auto_stop = Duration::from_secs_f32(SILENCE_AUTO_STOP_SECS);
+        let mut silence_since: Option<Instant> = None;
+        let mut speech_detected = false;
+        // Cooldown after finalize to let inject complete before wakeword retriggers.
+        let mut cooldown_until: Option<Instant> = None;
 
         log::info!("[core] ready");
 
@@ -86,6 +94,14 @@ impl Actor for CoreActor {
 
                     match inbox.recv() {
                         Ok(Message::StartListening) => {
+                            // Ignore during cooldown (inject still in progress).
+                            if let Some(until) = cooldown_until {
+                                if Instant::now() < until {
+                                    log::debug!("[core] ignoring StartListening during cooldown");
+                                    continue;
+                                }
+                                cooldown_until = None;
+                            }
                             log::info!("[core] recording started");
                             beep_if(&self.config, sound::beep_start);
                             recording_buffer.clear();
@@ -101,6 +117,41 @@ impl Actor for CoreActor {
                         recv(self.audio_rx) -> chunk => {
                             if let Ok(chunk) = chunk {
                                 recording_buffer.extend_from_slice(&chunk);
+
+                                // Silence detection: check RMS of latest chunk.
+                                let rms = audio::compute_rms(&chunk);
+                                if rms >= silence_threshold {
+                                    speech_detected = true;
+                                    silence_since = None;
+                                } else if speech_detected {
+                                    // Only start silence timer after speech was detected.
+                                    if silence_since.is_none() {
+                                        silence_since = Some(Instant::now());
+                                    }
+                                    if let Some(since) = silence_since {
+                                        if since.elapsed() >= silence_auto_stop {
+                                            log::info!(
+                                                "[core] silence detected, auto-stopping"
+                                            );
+                                            let elapsed = recording_start
+                                                .take()
+                                                .map_or(0.0, |t| t.elapsed().as_secs_f32());
+                                            finalize_recording(
+                                                &recording_buffer, denoise_enabled,
+                                                &mut asr_engine, &mut punctuator,
+                                                &self.config, &outbox, elapsed,
+                                                &mut noise_tracker,
+                                            );
+                                            recording_buffer.clear();
+                                            silence_since = None;
+                                            speech_detected = false;
+                                            // Cooldown: 2s for inject to complete.
+                                            cooldown_until = Some(Instant::now() + Duration::from_secs(2));
+                                            outbox.send(Message::StopListening).ok();
+                                            state = CoreState::Idle;
+                                        }
+                                    }
+                                }
                             }
                             // Check recording timeout.
                             if let Some(start) = recording_start {
@@ -121,6 +172,8 @@ impl Actor for CoreActor {
                                     );
                                     recording_buffer.clear();
                                     recording_start = None;
+                                    silence_since = None;
+                                    speech_detected = false;
                                     outbox.send(Message::StopListening).ok();
                                     state = CoreState::Idle;
                                 }
@@ -138,12 +191,16 @@ impl Actor for CoreActor {
                                     &mut noise_tracker,
                                 );
                                 recording_buffer.clear();
+                                silence_since = None;
+                                speech_detected = false;
                                 state = CoreState::Idle;
                             }
                             Ok(Message::CancelRecording) => {
                                 // Discard and restart silently (Auto mode toggle).
                                 recording_buffer.clear();
                                 recording_start = Some(Instant::now());
+                                silence_since = None;
+                                speech_detected = false;
                                 log::info!(
                                     "[core] recording cancelled, restarting for toggle"
                                 );
@@ -151,6 +208,8 @@ impl Actor for CoreActor {
                             Ok(Message::MuteInput) => {
                                 recording_buffer.clear();
                                 recording_start = None;
+                                silence_since = None;
+                                speech_detected = false;
                                 state = CoreState::Muted;
                             }
                             Ok(Message::Shutdown) => break,
@@ -254,8 +313,29 @@ fn finalize_recording(
     };
 
     let text = postprocess(&with_punct, &config.postprocess);
+
+    // Strip wakeword prefix if present (wakeword-triggered recordings
+    // capture the wake phrase itself since the mic is shared).
+    let text = strip_wakeword_prefix(&text, &config.wakeword.phrases);
+
+    if text.is_empty() {
+        log::info!("[core] transcribed: (only wakeword, no content)");
+        return;
+    }
+
     log::info!("[core] transcribed: {text:?}");
     outbox.send(Message::Transcript { text, raw }).ok();
+}
+
+/// Strip any configured wakeword phrase from the start of the transcription.
+fn strip_wakeword_prefix(text: &str, phrases: &[String]) -> String {
+    for phrase in phrases {
+        if let Some(rest) = text.strip_prefix(phrase.as_str()) {
+            let trimmed = rest.trim_start_matches(|c: char| c == '，' || c == '。' || c == ' ' || c == '、');
+            return trimmed.trim().to_string();
+        }
+    }
+    text.to_string()
 }
 
 fn add_punctuation(
