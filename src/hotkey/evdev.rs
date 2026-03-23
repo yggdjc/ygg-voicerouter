@@ -81,6 +81,7 @@ pub struct HotkeyMonitor {
     devices: Vec<evdev::Device>,
     state_machine: HotkeyStateMachine,
     last_event_time: Option<Instant>,
+    last_event_action: Option<KeyAction>,
 }
 
 impl HotkeyMonitor {
@@ -108,6 +109,7 @@ impl HotkeyMonitor {
             devices,
             state_machine: HotkeyStateMachine::new(config.mode, config.hold_delay),
             last_event_time: None,
+            last_event_action: None,
         })
     }
 
@@ -138,14 +140,21 @@ impl HotkeyMonitor {
                                 _ => continue, // ignore repeats (value == 2)
                             };
 
-                            // Debounce: ignore if same action within DEBOUNCE window.
-                            if let Some(last) = self.last_event_time {
-                                if now.duration_since(last) < DEBOUNCE {
+                            // Debounce: ignore duplicate of the SAME action
+                            // within DEBOUNCE window. Different actions (Down
+                            // then Up) must never be suppressed.
+                            if let (Some(last), Some(last_act)) =
+                                (self.last_event_time, self.last_event_action)
+                            {
+                                if action == last_act
+                                    && now.duration_since(last) < DEBOUNCE
+                                {
                                     debug!("debounced {action:?} event");
                                     continue;
                                 }
                             }
                             self.last_event_time = Some(now);
+                            self.last_event_action = Some(action);
 
                             if let Some(ev) = self.state_machine.process(action, now) {
                                 return Some(ev);
