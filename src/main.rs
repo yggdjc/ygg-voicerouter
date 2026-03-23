@@ -259,7 +259,9 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
         .name("tts".into())
         .spawn(move || tts_actor.run(tts_rx, bus_tx_tts))?;
 
-    let wakeword_actor = WakewordActor::new(config.clone());
+    let (_wakeword_audio_dummy_tx, wakeword_audio_dummy_rx) =
+        crossbeam::channel::bounded::<voicerouter::audio_source::AudioChunk>(1);
+    let wakeword_actor = WakewordActor::new(config.clone(), wakeword_audio_dummy_rx);
     let wakeword_handle = std::thread::Builder::new()
         .name("wakeword".into())
         .spawn(move || wakeword_actor.run(wakeword_rx, bus_tx_wakeword))?;
