@@ -182,7 +182,29 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
 
     log::info!("ready — listening for hotkey '{}'", config.hotkey.key);
 
+    let max_record = Duration::from_secs(u64::from(config.audio.max_record_seconds));
+
     while running.load(Ordering::SeqCst) {
+        // Check recording timeout before processing new events.
+        if let Some(start) = recording_start {
+            if start.elapsed() >= max_record {
+                log::warn!(
+                    "recording exceeded {}s limit, force-stopping",
+                    config.audio.max_record_seconds
+                );
+                on_stop_recording(
+                    &mut audio,
+                    &mut asr_engine,
+                    &mut punctuator,
+                    &config,
+                    &router,
+                    &mut recording_start,
+                    &mut noise_tracker,
+                );
+                monitor.reset_state();
+            }
+        }
+
         if let Some(event) = monitor.poll() {
             handle_event(
                 event,

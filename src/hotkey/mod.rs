@@ -142,6 +142,12 @@ impl HotkeyStateMachine {
         None
     }
 
+    /// Reset the state machine to idle. Used when an external timeout
+    /// force-stops recording.
+    pub fn reset(&mut self) {
+        self.state = HotkeyState::Idle;
+    }
+
     // -----------------------------------------------------------------------
     // Mode-specific handlers
     // -----------------------------------------------------------------------
