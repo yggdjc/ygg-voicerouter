@@ -229,11 +229,30 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
             }
         })?;
 
+    // Audio broadcast channels.
+    let (core_audio_tx, core_audio_rx) =
+        crossbeam::channel::bounded::<voicerouter::audio_source::AudioChunk>(256);
+    let (wakeword_audio_tx, wakeword_audio_rx) =
+        crossbeam::channel::bounded::<voicerouter::audio_source::AudioChunk>(256);
+    let (audio_stop_tx, audio_stop_rx) = crossbeam::channel::bounded::<()>(1);
+
+    let audio_config = config.audio.clone();
+    let audio_subscribers = vec![core_audio_tx, wakeword_audio_tx];
+    let audio_handle = std::thread::Builder::new()
+        .name("audio_source".into())
+        .spawn(move || {
+            if let Err(e) = voicerouter::audio_source::run_audio_source(
+                &audio_config,
+                audio_subscribers,
+                audio_stop_rx,
+            ) {
+                log::error!("[audio_source] failed: {e:#}");
+            }
+        })?;
+
     // Spawn actors.
     let hotkey_actor = HotkeyActor::new(config.hotkey.clone());
-    let (_core_audio_dummy_tx, core_audio_dummy_rx) =
-        crossbeam::channel::bounded::<voicerouter::audio_source::AudioChunk>(1);
-    let core_actor = CoreActor::new(config.clone(), preload, core_audio_dummy_rx);
+    let core_actor = CoreActor::new(config.clone(), preload, core_audio_rx);
 
     let bus_tx_hotkey = bus_tx.clone();
     let bus_tx_core = bus_tx.clone();
@@ -259,9 +278,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
         .name("tts".into())
         .spawn(move || tts_actor.run(tts_rx, bus_tx_tts))?;
 
-    let (_wakeword_audio_dummy_tx, wakeword_audio_dummy_rx) =
-        crossbeam::channel::bounded::<voicerouter::audio_source::AudioChunk>(1);
-    let wakeword_actor = WakewordActor::new(config.clone(), wakeword_audio_dummy_rx);
+    let wakeword_actor = WakewordActor::new(config.clone(), wakeword_audio_rx);
     let wakeword_handle = std::thread::Builder::new()
         .name("wakeword".into())
         .spawn(move || wakeword_actor.run(wakeword_rx, bus_tx_wakeword))?;
@@ -288,6 +305,10 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     log::info!("voicerouter ready — all actors running");
 
     // Wait for actors to finish with 5s global timeout.
+    // Stop audio source first so consumers don't block on recv.
+    audio_stop_tx.send(()).ok();
+    let _ = audio_handle.join();
+
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let mut handles: Vec<std::thread::JoinHandle<()>> =
         vec![hotkey_handle, core_handle, pipeline_handle, tts_handle, wakeword_handle];
