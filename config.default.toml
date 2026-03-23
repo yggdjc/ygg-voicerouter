@@ -13,15 +13,16 @@ hold_delay = 0.3
 sample_rate = 16000
 channels = 1
 silence_threshold = 0.01
+# Silence duration (seconds) before auto-stopping (wakeword mode only).
 silence_duration = 1.5
-max_record_seconds = 30
+# Hard timeout for hotkey recordings (seconds). Wakeword ignores this.
+max_record_seconds = 60
 denoise = true
 
 [asr]
 # Model identifier: "paraformer-zh", "funasr-nano", "whisper-tiny-en", "whisper-base-en"
 model = "paraformer-zh"
 model_dir = "~/.cache/voicerouter/models"
-# sherpa-rs 0.6 supports offline inference only; streaming is not available.
 
 [postprocess]
 # "strip_trailing", "keep", or "replace_space"
@@ -30,6 +31,9 @@ fullwidth_punct = true
 fix_english = true
 remove_fillers = true
 normalize_spoken = true
+# ct-transformer punctuation restoration
+restore_punctuation = true
+punctuation_model = "~/.cache/voicerouter/models/ct-punc"
 
 [inject]
 # "auto", "clipboard_paste", "wtype", "xdotool"
@@ -38,10 +42,42 @@ method = "auto"
 [sound]
 feedback = true
 
-[router]
-# Add routing rules here.  First match wins.
-# Example:
-# [[router.rules]]
-# trigger = "search "
+[tts]
+enabled = false
+engine = "sherpa-onnx"
+model = "kokoro-tts"
+model_dir = "~/.cache/voicerouter/models"
+speed = 1.2
+sid = 3               # zf_001 — Chinese female voice
+mute_mic_during_playback = true
+
+[wakeword]
+enabled = false
+phrases = ["小助手"]
+window_seconds = 2.0
+stride_seconds = 1.0
+# "start_recording" or "pipeline_passthrough"
+action = "start_recording"
+
+[ipc]
+enabled = true
+socket_path = ""      # default: $XDG_RUNTIME_DIR/voicerouter.sock
+max_connections = 8
+
+# Pipeline stages (replaces legacy [router]).
+# Uncomment and customize as needed.
+#
+# [[pipeline.stages]]
+# name = "echo"
+# handler = "speak"
+# condition = "starts_with:echo "
+#
+# [[pipeline.stages]]
+# name = "search"
 # handler = "shell"
-rules = []
+# command = "google-chrome 'https://www.google.com/search?q={text}'"
+# condition = "starts_with:搜索"
+#
+# [[pipeline.stages]]
+# name = "default"
+# handler = "inject"

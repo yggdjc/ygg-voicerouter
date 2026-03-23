@@ -7,11 +7,6 @@ Features from Python ygg-voiceim not yet ported to Rust voicerouter.
 - [ ] **Interactive setup wizard** — select mic, hotkey, model interactively (Python setup is more detailed)
 - [ ] **CT-Transformer disfluency detection** — replace rule-based filler removal with ct-transformer's built-in disfluency output (model already downloaded for punctuation restoration)
 - [ ] **的/得/地 同音修正** — 中文 ASR 最常见的同音字错误，需上下文语法分析
-
-## Voice Interaction Framework — needs real-world testing
-
-- [x] **TTS sherpa-onnx integration** — Kokoro v1.1 Chinese TTS integrated via OfflineTts API
-- [x] **Wakeword audio source** — AudioSource broadcast, CoreActor + WakewordActor share single cpal stream
 - [ ] **IPC client cleanup** — disconnected clients accumulate until next bus event triggers retain()
 - [ ] **DAG parallel execution** — topo sort done, execution is sequential; add crossbeam::scope for parallel siblings
 - [ ] **parse_condition to lib** — move from main.rs to pipeline::stage for testability
@@ -24,3 +19,10 @@ Features from Python ygg-voiceim not yet ported to Rust voicerouter.
 - [x] Voice Interaction Framework Phase 2 — TTS actor with cpal playback
 - [x] Voice Interaction Framework Phase 3 — wakeword actor with prefix detection
 - [x] Voice Interaction Framework Phase 4 — DAG orchestration, pipe/http/transform handlers
+- [x] TTS sherpa-onnx integration — Kokoro v1.1 Chinese TTS via OfflineTts API
+- [x] Wakeword audio source — AudioSource broadcast, CoreActor + WakewordActor share single cpal stream
+- [x] Mode-dependent recording stop — wakeword uses silence auto-stop, hotkey uses 60s timeout only
+- [x] Number formatting — comma separators for large numbers (1000000 → 1,000,000)
+- [x] Wakeword prefix stripping — only for wakeword-triggered recordings
+- [x] Post-inject cooldown — 2s cooldown prevents wakeword retrigger during inject
+- [x] Silent window skip — wakeword ASR skips silent windows to prevent hallucination false wakes

@@ -9,10 +9,10 @@
 - **离线语音识别** — 基于 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)，支持 Paraformer（默认）和 FunASR Nano 模型
 - **Actor 架构** — 每个组件独立线程运行，通过中央消息总线通信
 - **可组合 Pipeline** — 链式 Handler + 条件匹配，或 DAG 工作流编排
-- **内置 Handler** — inject（输入文字）、shell（执行命令）、pipe（子进程管道）、http（API 调用）、transform（正则/模板变换）
+- **内置 Handler** — inject（输入文字）、shell（执行命令）、pipe（子进程管道）、http（API 调用）、transform（正则/模板变换）、speak（TTS 语音输出）
 - **IPC** — Unix socket + JSON-RPC 2.0，支持外部工具集成
-- **TTS** — 语音合成 Actor，cpal 音频播放（sherpa-onnx 引擎，模型集成待完成）
-- **唤醒词** — 基于 ASR 的短语检测 Actor（音频源集成待完成）
+- **TTS** — Kokoro v1.1 中文语音合成，sherpa-onnx OfflineTts 引擎，cpal 播放，自动静音麦克风
+- **唤醒词** — 基于 ASR 的短语检测，AudioSource 广播共享音频流，滑动窗口持续监听
 - **神经标点恢复** — ct-transformer 模型自动添加标点符号
 - **后处理** — 填充词去除、口语转书面语、CJK 标点转换、断裂英文修复
 - **三种热键模式** — 按住说话 (PTT)、切换、自动（短按切换/长按 PTT）
@@ -100,8 +100,20 @@ handler = "inject"
 - `pipe` — 通过子进程 stdin/stdout 管道传输文本
 - `http` — 发送 HTTP 请求（GET/POST），支持 `{text}` 模板
 - `transform` — 正则替换或模板变换
+- `speak` — 将文字发送给 TTS Actor 进行语音播报
 
 未配置 `[[pipeline.stages]]` 时自动使用默认 inject handler。旧版 `[[router.rules]]` 会自动迁移并显示弃用警告。
+
+### 录音行为
+
+录音停止行为取决于触发方式：
+
+| 触发方式 | 静音自动停止 | 超时限制 |
+|---------|------------|---------|
+| 唤醒词 | 说话后 1.5s 静音 | 无 |
+| 热键（PTT/toggle/auto） | 无 | 60s |
+
+唤醒词录音在检测到说话后，静默 1.5 秒自动停止。热键录音不会因静音而停止——PTT 松键停止，toggle 二次按键停止，60 秒超时兜底。
 
 ### IPC
 
@@ -119,22 +131,38 @@ JSON-RPC 方法：`pipeline.send`、`recording.start`、`recording.stop`、`stat
 echo '{"method":"status"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/voicerouter.sock
 ```
 
-### TTS（实验性）
+### TTS
+
+Kokoro v1.1 中文语音合成。通过 `speak` pipeline handler 触发语音输出。
 
 ```toml
 [tts]
-enabled = false
+enabled = true
 engine = "sherpa-onnx"
-model = "vits-zh"
-speed = 1.0
+model = "kokoro-tts"          # model_dir 下的模型目录名
+model_dir = "~/.cache/voicerouter/models"
+speed = 1.2
+sid = 3                       # zf_001 — 中文女声
 mute_mic_during_playback = true
 ```
 
-### 唤醒词（实验性）
+TTS pipeline 示例：
+```toml
+[[pipeline.stages]]
+name = "echo"
+handler = "speak"
+condition = "starts_with:echo "
+```
+
+说 "echo 你好世界"——触发前缀被去除，"你好世界" 由 TTS 播报。
+
+### 唤醒词
+
+基于 ASR 的短语检测，使用 AudioSource 广播共享音频流，在滑动窗口中持续监听。
 
 ```toml
 [wakeword]
-enabled = false
+enabled = true
 phrases = ["小助手"]
 window_seconds = 2.0
 stride_seconds = 1.0
@@ -187,8 +215,7 @@ Actor 架构 + 中央消息总线：
 - 仅支持离线推理，不支持流式识别
 - RNNoise 去噪可能过于激进，建议保持 `denoise = false`
 - `wtype` 在 GNOME Wayland 下不可用（自动回退到 clipboard-paste）
-- TTS 引擎为 stub 实现，返回静音，需完成模型集成
-- 唤醒词 Actor 为骨架，需接入音频源实现持续检测
+- TTS 需下载 Kokoro 模型（约 500 MB）
 
 ## 许可
 

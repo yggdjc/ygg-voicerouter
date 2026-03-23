@@ -9,10 +9,10 @@
 - **Offline ASR** via [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — Paraformer (default) or FunASR Nano
 - **Actor architecture** — each component runs on its own thread with message-passing via central bus
 - **Composable pipeline** — chain handlers with conditions, or build DAG workflows with fan-out
-- **Built-in handlers** — inject (type text), shell (run commands), pipe (stdin/stdout), http (API calls), transform (regex/template)
+- **Built-in handlers** — inject (type text), shell (run commands), pipe (stdin/stdout), http (API calls), transform (regex/template), speak (TTS output)
 - **IPC** — Unix socket with JSON-RPC 2.0 for external tool integration
-- **TTS** — text-to-speech actor with cpal playback (sherpa-onnx engine, model integration pending)
-- **Wake word** — ASR-based phrase detection actor (audio source integration pending)
+- **TTS** — Kokoro v1.1 Chinese TTS via sherpa-onnx OfflineTts, cpal playback, auto mic-mute
+- **Wake word** — ASR-based phrase detection with shared AudioSource broadcast, sliding window
 - **Neural punctuation** — ct-transformer model auto-inserts punctuation
 - **Post-processing** — filler removal, spoken-to-written normalization, CJK punctuation, English token repair
 - **Three hotkey modes** — push-to-talk, toggle, auto (short-press toggle / long-press PTT)
@@ -100,8 +100,20 @@ Available handlers:
 - `pipe` — pipe text through stdin/stdout of a subprocess
 - `http` — send HTTP request (GET/POST) with `{text}` template
 - `transform` — apply regex or template transformation
+- `speak` — send text to the TTS actor for voice output
 
 If no `[[pipeline.stages]]` are configured, a default inject handler is used. Legacy `[[router.rules]]` are auto-migrated with a deprecation warning.
+
+### Recording Behavior
+
+Recording stop behavior depends on how recording was triggered:
+
+| Trigger | Silence auto-stop | Timeout |
+|---------|-------------------|---------|
+| Wakeword | 1.5s after speech | None |
+| Hotkey (PTT/toggle/auto) | None | 60s |
+
+Wakeword recordings auto-stop after 1.5 seconds of silence following detected speech. Hotkey recordings never auto-stop on silence — PTT stops on key release, toggle stops on second press, with a 60-second hard timeout as safety net.
 
 ### IPC
 
@@ -119,22 +131,38 @@ Example:
 echo '{"method":"status"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/voicerouter.sock
 ```
 
-### TTS (experimental)
+### TTS
+
+Kokoro v1.1 Chinese TTS via sherpa-onnx. Use the `speak` pipeline handler to trigger voice output.
 
 ```toml
 [tts]
-enabled = false
+enabled = true
 engine = "sherpa-onnx"
-model = "vits-zh"
-speed = 1.0
+model = "kokoro-tts"          # model directory under model_dir
+model_dir = "~/.cache/voicerouter/models"
+speed = 1.2
+sid = 3                       # zf_001 — Chinese female voice
 mute_mic_during_playback = true
 ```
 
-### Wake Word (experimental)
+Example pipeline using TTS:
+```toml
+[[pipeline.stages]]
+name = "echo"
+handler = "speak"
+condition = "starts_with:echo "
+```
+
+Say "echo 你好世界" — the trigger prefix is stripped and "你好世界" is spoken via TTS.
+
+### Wake Word
+
+ASR-based phrase detection using shared AudioSource broadcast. Continuously monitors audio in a sliding window.
 
 ```toml
 [wakeword]
-enabled = false
+enabled = true
 phrases = ["小助手"]
 window_seconds = 2.0
 stride_seconds = 1.0
@@ -206,15 +234,17 @@ src/
 │       ├── shell.rs     # Shell command handler
 │       ├── pipe.rs      # Stdin/stdout pipe handler
 │       ├── http.rs      # HTTP request handler
+│       ├── speak.rs     # TTS voice output handler
 │       └── transform.rs # Regex/template transform handler
 ├── postprocess/         # Text post-processing pipeline
 │   ├── filler.rs        # Filler word removal
 │   ├── normalize.rs     # Spoken-to-written normalization
 │   ├── english_fix.rs   # Broken English token repair
 │   └── punctuation.rs   # Punctuation handling
+├── audio_source.rs      # Shared cpal audio stream (broadcasts to Core + Wakeword)
 ├── tts/                 # Text-to-speech
 │   ├── mod.rs           # TtsActor, TtsEngine trait, cpal playback
-│   └── sherpa.rs        # sherpa-onnx TTS engine (stub)
+│   └── sherpa.rs        # Kokoro v1.1 TTS via sherpa-onnx OfflineTts
 ├── wakeword/            # Wake word detection
 │   ├── mod.rs           # WakewordActor
 │   └── detector.rs      # Phrase prefix matching
@@ -226,8 +256,7 @@ src/
 - Offline inference only, no streaming recognition
 - RNNoise denoising may be too aggressive; keep `denoise = false` unless needed
 - `wtype` unavailable on GNOME Wayland (auto-falls back to clipboard-paste)
-- TTS engine is a stub — returns silence until model integration is complete
-- Wake word actor skeleton only — needs audio source integration for continuous detection
+- TTS requires Kokoro model download (~500 MB)
 
 ## License
 
