@@ -66,6 +66,7 @@ required.
 ### Message Types
 
 ```rust
+#[derive(Clone, Debug)]
 enum Message {
     // ASR domain
     Transcript { text: String, raw: String },
@@ -103,6 +104,10 @@ struct Metadata {
 Removed from original draft: `AudioSamples`, `SilenceDetected` (internal to
 CoreActor, never cross the bus), and `confidence: f32` (no consumer uses it).
 
+`Message` derives `Clone` because `Bus::publish()` clones messages for 1:N
+fan-out. All fields are `String`/`Copy` types — clone cost is negligible at
+the system's message throughput (~1-2 messages/second).
+
 ### Actor Trait
 
 ```rust
@@ -131,7 +136,12 @@ impl Bus {
         let topic = msg.topic();  // e.g. "MuteInput", "Transcript"
         if let Some(subs) = self.subscriptions.get(topic) {
             for sender in subs {
-                let _ = sender.send(msg.clone());
+                if let Err(e) = sender.send(msg.clone()) {
+                    // Warn on Shutdown delivery failure — actor may miss exit signal.
+                    if matches!(msg, Message::Shutdown) {
+                        log::warn!("failed to deliver Shutdown: {e}");
+                    }
+                }
             }
         }
     }
@@ -143,7 +153,7 @@ Subscription table (registered at startup, immutable):
 | Message | Subscribers |
 |---------|------------|
 | `StartListening` | CoreActor |
-| `StopListening` | CoreActor |
+| `StopListening` | CoreActor, HotkeyActor (reset state machine on forced stop) |
 | `Transcript` | PipelineActor, IpcActor (push to subscribers) |
 | `PipelineInput` | PipelineActor |
 | `PipelineOutput` | IpcActor (push to subscribers) |
@@ -164,7 +174,7 @@ WakewordActor without broadcast overhead.
 
 | Actor | Thread | Responsibility | Input | Output |
 |-------|--------|----------------|-------|--------|
-| `HotkeyActor` | 1 | evdev listen + state machine | — (self-driven) | `StartListening`, `StopListening` |
+| `HotkeyActor` | 1 | evdev listen + state machine | `StopListening` (reset on forced stop) | `StartListening`, `StopListening` |
 | `CoreActor` | 1 | Audio capture, silence detection, ASR, postprocess | `StartListening`, `StopListening`, `MuteInput`, `UnmuteInput` | `Transcript` |
 | `PipelineActor` | 1 | Handler chain execution | `Transcript`, `PipelineInput` | `PipelineOutput`, `SpeakRequest` |
 | `IpcActor` | 1 | Unix socket, JSON-RPC | External connections | `PipelineInput`; pushes `Transcript` events to subscribers |
@@ -251,12 +261,10 @@ trait Handler: Send + Sync {
 }
 
 /// Read-only view of the stage's configuration, passed to handler at execution.
+/// Uses a flat key-value map so new handler types don't require struct changes.
 struct StageContext {
     stage_name: String,
-    command: Option<String>,     // shell/pipe command template
-    url: Option<String>,         // http handler URL
-    method: Option<String>,      // http method
-    body: Option<String>,        // http body template
+    params: HashMap<String, String>,  // "command", "url", "method", "body", etc.
 }
 
 enum HandlerResult {
@@ -273,8 +281,9 @@ enum HandlerResult {
 
 Design decisions:
 - Handler receives `&str` (not `Message`) — handlers are text processors, not
-  message routers. PipelineActor extracts text from Transcript/PipelineInput
-  before calling handlers.
+  message routers. PipelineActor extracts text before calling handlers:
+  `Transcript` → uses `text` field (postprocessed), `PipelineInput` → uses
+  `text` field. The `raw` field is only forwarded to IPC event subscribers.
 - `StageContext` provides stage config to handlers at execution time, resolving
   the Phase 1 / Phase 4 compatibility issue. Handlers like `shell` and `http`
   read their command/URL templates from context rather than construction time.
@@ -289,11 +298,13 @@ runs the stage chain:
 ```rust
 fn execute_pipeline(&self, text: &str, outbox: &Sender<Message>) {
     let mut current_text = text.to_string();
+    // Phase 4 adds: let mut results: HashMap<String, String> for DAG condition eval.
+    // Phase 1 only uses Condition::StartsWith which needs no prior results.
 
     for stage in &self.stages {
-        // Phase 1: conditions are limited to prefix match (for router compat)
+        // Phase 1: conditions are limited to StartsWith (for router compat)
         if let Some(ref cond) = stage.condition {
-            if !cond.matches(&current_text, &self.results) {
+            if !cond.matches_text(&current_text) {
                 continue;  // skip this stage
             }
         }
@@ -320,6 +331,12 @@ fn execute_pipeline(&self, text: &str, outbox: &Sender<Message>) {
     }
 }
 ```
+
+`Condition` has two evaluation methods:
+- `matches_text(&str)`: Phase 1 — evaluates against current text only
+  (`StartsWith`, `Always`).
+- `matches_with_results(&str, &HashMap<String, String>)`: Phase 4 — also
+  checks upstream stage outputs (`OutputEq`, `OutputContains`).
 
 This preserves the current router's prefix-matching + trigger-stripping logic
 inside PipelineActor, using `Condition::StartsWith` for migrated router rules.
@@ -404,7 +421,10 @@ then force-exits.
 ### Code Changes
 
 - `main.rs`: `run_daemon()` → create 4 actors + bus, spawn threads, await shutdown
-- `hotkey/`: Internal logic unchanged, wrapped in `HotkeyActor::run()` loop
+- `hotkey/`: Internal logic unchanged, wrapped in `HotkeyActor::run()` loop.
+  `CancelAndToggle` event is translated to `StopListening` + `StartListening`
+  pair on the bus. HotkeyActor also subscribes to `StopListening` to call
+  `reset_state()` when CoreActor forces a stop (e.g., recording timeout).
 - `audio/`, `asr/`, `postprocess/`: No changes, called internally by `CoreActor`
 - `router/`: Rewritten as `pipeline/`, Handler trait signature changed
 - `inject/`: Unchanged. `pipeline/handlers/inject.rs` wraps `inject::inject_text()`
