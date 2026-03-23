@@ -67,16 +67,12 @@ required.
 
 ```rust
 enum Message {
-    // Audio domain
-    AudioSamples { samples: Vec<f32>, sample_rate: u32 },
-    SilenceDetected,
-
     // ASR domain
-    Transcript { text: String, raw: String, confidence: f32 },
+    Transcript { text: String, raw: String },
 
     // Pipeline domain
     PipelineInput { text: String, metadata: Metadata },
-    PipelineOutput { text: String, next: Option<String> },
+    PipelineOutput { text: String, stage: String },
 
     // TTS domain (Phase 2)
     SpeakRequest { text: String, source: SpeakSource },
@@ -96,7 +92,16 @@ enum SpeakSource {
     LlmReply,
     SystemFeedback,
 }
+
+/// Context carried through the pipeline for condition evaluation.
+struct Metadata {
+    source: String,      // "hotkey", "wakeword", "ipc"
+    timestamp: Instant,
+}
 ```
+
+Removed from original draft: `AudioSamples`, `SilenceDetected` (internal to
+CoreActor, never cross the bus), and `confidence: f32` (no consumer uses it).
 
 ### Actor Trait
 
@@ -110,18 +115,46 @@ trait Actor: Send + 'static {
 Each actor owns its thread, communicates via `crossbeam::channel`. Internal
 logic remains synchronous.
 
-### Bus
+### Bus Routing Model
 
-Lightweight central message router, not a broadcast system:
+The bus uses **topic-based 1:N routing**, not 1:1. Each message variant maps to
+a static list of subscriber actors:
 
 ```rust
 struct Bus {
-    routes: HashMap<&'static str, Sender<Message>>,
+    /// message_variant_name → list of subscriber senders
+    subscriptions: HashMap<&'static str, Vec<Sender<Message>>>,
+}
+
+impl Bus {
+    fn publish(&self, msg: Message) {
+        let topic = msg.topic();  // e.g. "MuteInput", "Transcript"
+        if let Some(subs) = self.subscriptions.get(topic) {
+            for sender in subs {
+                let _ = sender.send(msg.clone());
+            }
+        }
+    }
 }
 ```
 
-Routes are registered statically at startup. Each message type has a known
-destination actor.
+Subscription table (registered at startup, immutable):
+
+| Message | Subscribers |
+|---------|------------|
+| `StartListening` | CoreActor |
+| `StopListening` | CoreActor |
+| `Transcript` | PipelineActor, IpcActor (push to subscribers) |
+| `PipelineInput` | PipelineActor |
+| `PipelineOutput` | IpcActor (push to subscribers) |
+| `SpeakRequest` | TtsActor (Phase 2) |
+| `SpeakDone` | CoreActor, WakewordActor (Phase 3) |
+| `MuteInput` | CoreActor, WakewordActor (Phase 3) |
+| `UnmuteInput` | CoreActor, WakewordActor (Phase 3) |
+| `Shutdown` | ALL actors |
+
+This resolves the fan-out requirement: `MuteInput` reaches both CoreActor and
+WakewordActor without broadcast overhead.
 
 ---
 
@@ -136,31 +169,180 @@ destination actor.
 | `PipelineActor` | 1 | Handler chain execution | `Transcript`, `PipelineInput` | `PipelineOutput`, `SpeakRequest` |
 | `IpcActor` | 1 | Unix socket, JSON-RPC | External connections | `PipelineInput`; pushes `Transcript` events to subscribers |
 
+### CoreActor Message Processing Loop
+
+CoreActor must simultaneously: (a) block on inbox for control messages, and
+(b) monitor audio levels for silence detection during recording.
+
+Solution: `crossbeam::select!` with a timeout channel.
+
+```rust
+impl Actor for CoreActor {
+    fn run(self, inbox: Receiver<Message>, outbox: Sender<Message>) {
+        let mut state = CoreState::Idle;
+
+        loop {
+            match state {
+                CoreState::Idle => {
+                    // Block on inbox — no audio processing needed
+                    match inbox.recv() {
+                        Ok(Message::StartListening) => {
+                            self.audio.start_recording();
+                            self.recording_start = Some(Instant::now());
+                            state = CoreState::Recording;
+                        }
+                        Ok(Message::Shutdown) => break,
+                        _ => {}
+                    }
+                }
+                CoreState::Recording => {
+                    // Poll inbox with 10ms timeout for silence monitoring
+                    crossbeam::select! {
+                        recv(inbox) -> msg => match msg {
+                            Ok(Message::StopListening) => {
+                                state = self.finalize_recording(&outbox);
+                            }
+                            Ok(Message::MuteInput) => {
+                                state = CoreState::Muted;
+                            }
+                            Ok(Message::Shutdown) => break,
+                            _ => {}
+                        },
+                        default(Duration::from_millis(10)) => {
+                            // Check recording timeout
+                            if self.exceeded_max_record() {
+                                state = self.finalize_recording(&outbox);
+                                outbox.send(Message::StopListening).ok();
+                            }
+                            // Silence detection continues via audio pipeline
+                        }
+                    }
+                }
+                CoreState::Muted => {
+                    // Paused — wait for UnmuteInput or Shutdown
+                    match inbox.recv() {
+                        Ok(Message::UnmuteInput) => state = CoreState::Idle,
+                        Ok(Message::Shutdown) => break,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+`finalize_recording()` calls `audio.stop_recording()` → `validate_recording()`
+→ `transcribe()` → `postprocess()` → publishes `Transcript` to outbox. This is
+the same logic as current `on_stop_recording()` in `main.rs`, just moved into
+CoreActor.
+
 ### Handler Trait (revised)
 
 ```rust
 trait Handler: Send + Sync {
     fn name(&self) -> &str;
-    fn handle(&self, input: Message) -> Result<HandlerResult>;
+
+    /// Process input text, returning what to do next.
+    ///
+    /// `ctx` provides access to stage configuration (command template, URL, etc.)
+    /// so handlers don't need to carry config internally.
+    fn handle(&self, text: &str, ctx: &StageContext) -> Result<HandlerResult>;
+}
+
+/// Read-only view of the stage's configuration, passed to handler at execution.
+struct StageContext {
+    stage_name: String,
+    command: Option<String>,     // shell/pipe command template
+    url: Option<String>,         // http handler URL
+    method: Option<String>,      // http method
+    body: Option<String>,        // http body template
 }
 
 enum HandlerResult {
-    Forward(Message),   // pass to next handler in chain
-    Emit(Message),      // send to bus (e.g. SpeakRequest)
-    Done,               // terminate pipeline
+    /// Pass transformed text to the next stage in the chain.
+    Forward(String),
+    /// Send a message to the bus (e.g. SpeakRequest). Pipeline continues.
+    Emit(Message),
+    /// Both forward to next stage AND emit to bus.
+    ForwardAndEmit(String, Message),
+    /// Terminate pipeline — no further stages execute.
+    Done,
 }
 ```
 
-### Pipeline Configuration
+Design decisions:
+- Handler receives `&str` (not `Message`) — handlers are text processors, not
+  message routers. PipelineActor extracts text from Transcript/PipelineInput
+  before calling handlers.
+- `StageContext` provides stage config to handlers at execution time, resolving
+  the Phase 1 / Phase 4 compatibility issue. Handlers like `shell` and `http`
+  read their command/URL templates from context rather than construction time.
+- `ForwardAndEmit` handles the common case: forward text to next stage AND
+  emit a side-effect (e.g., TTS speak while also logging).
 
-```toml
-[[pipeline.stages]]
-name = "default"
-handler = "inject"
+### PipelineActor Orchestration (Phase 1)
+
+PipelineActor receives `Transcript` or `PipelineInput`, extracts text, and
+runs the stage chain:
+
+```rust
+fn execute_pipeline(&self, text: &str, outbox: &Sender<Message>) {
+    let mut current_text = text.to_string();
+
+    for stage in &self.stages {
+        // Phase 1: conditions are limited to prefix match (for router compat)
+        if let Some(ref cond) = stage.condition {
+            if !cond.matches(&current_text, &self.results) {
+                continue;  // skip this stage
+            }
+        }
+
+        // Strip trigger prefix if condition was a StartsWith match
+        let payload = stage.condition.as_ref()
+            .and_then(|c| c.strip_prefix(&current_text))
+            .unwrap_or(&current_text);
+
+        let ctx = stage.to_context();
+        match stage.handler.handle(&payload, &ctx) {
+            Ok(HandlerResult::Forward(text)) => current_text = text,
+            Ok(HandlerResult::Emit(msg)) => { outbox.send(msg).ok(); }
+            Ok(HandlerResult::ForwardAndEmit(text, msg)) => {
+                current_text = text;
+                outbox.send(msg).ok();
+            }
+            Ok(HandlerResult::Done) => break,
+            Err(e) => {
+                log::error!("[pipeline] stage '{}' failed: {e:#}", stage.name);
+                break;  // Phase 1: fail-fast. Phase 4: configurable.
+            }
+        }
+    }
+}
 ```
 
-Stages execute in declaration order. Each stage receives the output of the
-previous stage. This is a linear chain in Phase 1, upgraded to DAG in Phase 4.
+This preserves the current router's prefix-matching + trigger-stripping logic
+inside PipelineActor, using `Condition::StartsWith` for migrated router rules.
+
+### Router → Pipeline Migration Logic
+
+At config load time, `[[router.rules]]` entries are converted:
+
+```rust
+// router rule:
+//   trigger = "搜索"
+//   handler = "shell"
+//   command = "firefox https://google.com/search?q={text}"
+//
+// becomes pipeline stage:
+//   name = "router_rule_0"
+//   handler = "shell"
+//   command = "firefox https://google.com/search?q={text}"
+//   condition = "starts_with:搜索"
+```
+
+When `[[pipeline.stages]]` is present, `[[router.rules]]` is ignored with a
+deprecation warning.
 
 ### IPC Protocol
 
@@ -182,11 +364,42 @@ Unix socket at `$XDG_RUNTIME_DIR/voicerouter.sock`. JSON-RPC 2.0:
 {"method": "status"}
 ```
 
-### Migration from Router
+### IPC Security and Error Handling
 
-Existing `[[router.rules]]` config is auto-converted to `[[pipeline.stages]]`
-at load time. When no pipeline config exists, behavior is identical to current
-(single inject handler). The `[router]` section is deprecated but still parsed.
+- **Authentication**: Unix socket permissions (0600) — only the owning user
+  can connect. No application-level auth needed.
+- **Max connections**: 8 concurrent. New connections beyond limit receive
+  JSON-RPC error and are closed.
+- **Malformed JSON**: Return JSON-RPC parse error (-32700), keep connection open.
+- **Message size limit**: 64 KB per message. Oversized messages are rejected.
+- **Client disconnect**: Subscription is removed, no effect on other actors.
+- **Backpressure**: If a subscriber falls behind (channel full), events are
+  dropped for that client with a warning log. Other clients unaffected.
+
+### IPC Configuration
+
+```toml
+[ipc]
+enabled = true
+socket_path = ""              # default: $XDG_RUNTIME_DIR/voicerouter.sock
+max_connections = 8
+```
+
+### Graceful Shutdown Protocol
+
+On `Shutdown` message (triggered by SIGINT/SIGTERM):
+
+1. **HotkeyActor**: Stop evdev polling, exit immediately.
+2. **WakewordActor** (Phase 3): Stop audio capture, exit immediately.
+3. **CoreActor**: If recording, discard current audio (do not transcribe). Exit.
+4. **PipelineActor**: Drain in-flight pipeline execution (with 3s timeout),
+   then exit. Stages that exceed timeout are abandoned.
+5. **TtsActor** (Phase 2): Stop current playback immediately. Exit.
+6. **IpcActor**: Close all client connections, remove socket file. Exit last.
+
+Bus sends `Shutdown` to all actors simultaneously. Each actor handles it in its
+own `run()` loop. Main thread joins all actor threads with a 5s global timeout,
+then force-exits.
 
 ### Code Changes
 
@@ -194,7 +407,9 @@ at load time. When no pipeline config exists, behavior is identical to current
 - `hotkey/`: Internal logic unchanged, wrapped in `HotkeyActor::run()` loop
 - `audio/`, `asr/`, `postprocess/`: No changes, called internally by `CoreActor`
 - `router/`: Rewritten as `pipeline/`, Handler trait signature changed
-- New: `actor.rs`, `bus.rs`, `ipc.rs`, `pipeline/`
+- `inject/`: Unchanged. `pipeline/handlers/inject.rs` wraps `inject::inject_text()`
+  (delegation, not duplication)
+- New: `actor.rs`, `ipc.rs`, `pipeline/`
 
 Existing 140 tests: only router-related tests need adaptation to new Handler
 trait. All others unaffected.
@@ -224,8 +439,7 @@ later without touching TtsActor.
 ### Echo Prevention
 
 TtsActor sends `MuteInput` before playback and `UnmuteInput` after. CoreActor
-pauses audio capture during TTS output to prevent ASR from transcribing its own
-speech.
+and WakewordActor both subscribe to these messages and pause accordingly.
 
 ### Configuration
 
@@ -264,6 +478,53 @@ CPU cost is acceptable on the target hardware (i7-11700, 8 cores). The ASR
 inference (~250ms per 2s window) runs only during idle listening and stops
 automatically when recording begins.
 
+### Microphone Sharing Architecture
+
+WakewordActor and CoreActor both need mic access. The solution is a shared
+`AudioSource` actor that owns the single cpal stream and multicasts samples:
+
+```
+┌──────────────┐
+│  AudioSource │  (owns cpal stream, always-on when wakeword enabled)
+│  (mic thread) │
+└──────┬───────┘
+       │ raw samples (ring buffer / crossbeam channel)
+       ├──→ WakewordActor (continuous 2s sliding window)
+       └──→ CoreActor (on-demand recording buffer)
+```
+
+- **AudioSource** is not a full actor — it is a shared component that runs the
+  cpal input callback and writes samples to two bounded channels.
+- When wakeword is disabled, AudioSource is owned solely by CoreActor (current
+  behavior, no change).
+- When wakeword is enabled, AudioSource starts on daemon launch and feeds both
+  consumers. CoreActor's `start_recording` / `stop_recording` control whether
+  it accumulates samples into its buffer, not whether the mic is active.
+- WakewordActor stops consuming (drains channel) when it receives `MuteInput`
+  or when CoreActor is actively recording (via a shared `AtomicBool` flag).
+
+### ASR Instance Strategy
+
+**Separate AsrEngine instance for WakewordActor** (recommended):
+
+- Two Paraformer instances = ~600 MB total RAM. Acceptable on 32 GB target.
+- No mutex contention — CoreActor and WakewordActor never block each other.
+- WakewordActor can use a smaller/faster model (e.g., FunASR Nano at ~100 MB)
+  since it only needs to detect a few phrases, not full transcription accuracy.
+
+### Always-On Mic: UX Consequences
+
+When wakeword is enabled, the mic is always active. This has visible effects:
+
+| Concern | Mitigation |
+|---------|-----------|
+| PulseAudio/PipeWire shows "recording" indicator | Document in README; use PipeWire monitor source if available (passive, no indicator) |
+| GNOME/KDE privacy indicator (red dot) | Unavoidable with direct mic access; document as expected behavior |
+| Power consumption | Measure actual impact; cpal callback is interrupt-driven, CPU cost is minimal when not running ASR |
+| Privacy | All processing is local/offline; no data leaves the machine; document clearly |
+
+Wakeword is **opt-in** (default disabled) to avoid surprising users.
+
 ### WakewordActor
 
 ```
@@ -276,7 +537,20 @@ WakewordActor ──continuous 2s window──→ ASR ──→ prefix match ─
 - On match: wake phrase is stripped, remaining content goes directly into
   pipeline as `PipelineInput` (single-utterance command without second trigger)
 - Pauses on `MuteInput` (TTS playback) and during active recording
-- Separate `AsrEngine` instance or shared with mutex
+- Owns its own `AsrEngine` instance
+
+### Pipeline Passthrough Semantics
+
+When `action = "pipeline_passthrough"`:
+
+- Wake phrase is stripped via prefix match (exact text match after ASR).
+- If remaining text is non-empty: sent as `PipelineInput` directly.
+- If remaining text is empty (user only said the wake phrase): falls back to
+  `start_recording` behavior — CoreActor begins recording for the next
+  utterance.
+- Matching algorithm: exact prefix match on ASR text output (same as current
+  router trigger matching). No fuzzy matching — ASR output is already
+  normalized text.
 
 ### Configuration
 
@@ -287,10 +561,8 @@ phrases = ["小助手", "hey router"]
 window_seconds = 2.0
 stride_seconds = 1.0
 action = "start_recording"   # start_recording | pipeline_passthrough
+model = ""                   # optional: override ASR model for wakeword (e.g. funasr-nano)
 ```
-
-`pipeline_passthrough`: wake phrase + command in one utterance
-("小助手帮我搜索XXX" → "帮我搜索XXX" enters pipeline directly).
 
 ### New Files
 
@@ -347,7 +619,7 @@ struct Stage {
     handler: Box<dyn Handler>,
     after: Option<String>,
     condition: Option<Condition>,
-    timeout: Duration,
+    timeout: Duration,            // default: 10s
 }
 
 enum Condition {
@@ -359,15 +631,45 @@ enum Condition {
 
 struct PipelineExecution {
     stages: Vec<Stage>,
-    results: HashMap<String, Message>,
+    results: HashMap<String, String>,  // stage name → output text
 }
 ```
 
-1. Topological sort on stages
+1. Topological sort on stages at config load time (fail-fast on cycles)
 2. Execute stages with no dependencies first
 3. On stage completion, evaluate downstream conditions, execute if satisfied
 4. Sibling stages at same depth can run in parallel (`crossbeam::scope`)
-5. Stage timeout → skip with warning log
+5. Stage timeout → skip with warning log, downstream stages that depend on it
+   are also skipped
+
+### Error Propagation in DAG
+
+- **Non-leaf stage fails** (e.g., `classify` errors): All downstream stages
+  that depend on it are skipped. Other independent branches continue.
+- **Leaf stage fails** (e.g., `inject` errors): Logged, no cascade effect.
+- **Partial parallel failure**: Each sibling is independent. Failures in one
+  branch do not affect others.
+- **Pipeline-level error policy**: Configurable per-pipeline (not per-stage):
+  - `fail_fast` (default Phase 1): First error stops entire pipeline.
+  - `best_effort` (default Phase 4): Continue other branches on error.
+
+```toml
+[pipeline]
+error_policy = "best_effort"   # fail_fast | best_effort
+```
+
+### Concurrency Limits
+
+- **Max parallel stages per execution**: 4 (configurable). Prevents thread
+  explosion from wide DAGs.
+- **Max concurrent pipeline executions**: 2 (configurable). IPC `pipeline.send`
+  calls are queued if limit is reached.
+
+```toml
+[pipeline]
+max_parallel_stages = 4
+max_concurrent_executions = 2
+```
 
 ### New Handler Types
 
@@ -376,6 +678,13 @@ struct PipelineExecution {
 | `pipe` | stdin/stdout pipe: write text to subprocess stdin, read stdout as output |
 | `http` | HTTP POST/GET, body contains text, response body as output |
 | `transform` | Built-in text transforms: regex replace, jq extract, template |
+
+### HTTP Handler: Dependency Decision
+
+Writing correct HTTP/1.1 from `std::net` is not worth the effort for localhost
+calls to Ollama/LLM APIs (chunked encoding, timeouts, etc.). Use `ureq` — a
+minimal sync HTTP client (~5 transitive deps, no async, no TLS needed for
+localhost).
 
 ### Fan-out Example
 
@@ -401,29 +710,29 @@ struct PipelineExecution {
 
 | Crate | Purpose | Phase | Justification |
 |-------|---------|-------|---------------|
-| `crossbeam` | Actor channels (bounded MPMC) | 1 | De facto standard for sync channels, zero-cost over std when idle |
-| `serde_json` | IPC JSON-RPC serialization | 1 | Already transitively depended via serde ecosystem |
+| `crossbeam` | Actor channels (bounded MPMC) + `select!` | 1 | De facto standard for sync channels |
+| `serde_json` | IPC JSON-RPC serialization | 1 | Already transitively depended via serde |
+| `ureq` | Sync HTTP client for localhost LLM calls | 4 | Minimal deps, no async, no TLS needed |
 
-No new dependencies for Phase 2–4. TTS uses sherpa-onnx (existing). Wake word
-reuses ASR. HTTP handler uses `std::net` / minimal HTTP (no reqwest needed for
-localhost calls).
+No new dependencies for Phase 2–3. TTS uses sherpa-onnx (existing). Wake word
+reuses ASR.
 
 ## File Structure (Final)
 
 ```
 src/
-├── actor.rs              # Actor trait + Bus                  (Phase 1)
+├── actor.rs              # Actor trait + Bus + shutdown       (Phase 1)
 ├── ipc.rs                # IpcActor + JSON-RPC                (Phase 1)
 ├── pipeline/
 │   ├── mod.rs            # PipelineActor                      (Phase 1)
 │   ├── stage.rs          # Stage + Condition + HandlerResult   (Phase 1, extended Phase 4)
 │   ├── dag.rs            # DAG topo-sort + parallel execution  (Phase 4)
 │   └── handlers/
-│       ├── mod.rs
-│       ├── inject.rs     # migrated from router/handlers/
+│       ├── mod.rs        # Handler trait definition
+│       ├── inject.rs     # wraps inject::inject_text()
 │       ├── shell.rs      # migrated from router/handlers/
 │       ├── pipe.rs       # stdin/stdout pipe                   (Phase 4)
-│       ├── http.rs       # HTTP handler                        (Phase 4)
+│       ├── http.rs       # HTTP handler (ureq)                 (Phase 4)
 │       └── transform.rs  # text transforms                     (Phase 4)
 ├── tts/
 │   ├── mod.rs            # TtsActor + engine trait             (Phase 2)
@@ -432,10 +741,10 @@ src/
 │   ├── mod.rs            # WakewordActor                       (Phase 3)
 │   └── detector.rs       # sliding window + ASR match
 ├── hotkey/               # unchanged, wrapped in Actor
-├── audio/                # unchanged
+├── audio/                # unchanged (AudioSource extraction for Phase 3)
 ├── asr/                  # unchanged
 ├── postprocess/          # unchanged
-├── inject/               # unchanged
+├── inject/               # unchanged, called by pipeline/handlers/inject.rs
 ├── config.rs             # extended with new sections
 ├── sound.rs              # unchanged
 ├── lib.rs                # extended with new modules
@@ -444,7 +753,8 @@ src/
 
 ## Backward Compatibility
 
-- Existing `[router]` config auto-migrates to `[[pipeline.stages]]` at load time
+- Existing `[router]` config auto-migrates to `[[pipeline.stages]]` with
+  `condition = "starts_with:<trigger>"` at load time
 - No pipeline config → defaults to single inject handler (current behavior)
 - `[router]` section deprecated but parsed without error for one major version
 - All new features (`[tts]`, `[wakeword]`, `[ipc]`) default to disabled or
@@ -454,7 +764,11 @@ src/
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
-| ASR-based wake word CPU cost too high on weaker hardware | Medium | Users disable feature | Make it opt-in (default off), document CPU requirements |
+| ASR-based wake word CPU cost too high on weaker hardware | Medium | Users disable feature | Opt-in (default off), allow lighter model override, document CPU requirements |
 | sherpa-onnx TTS voice quality insufficient | Medium | Poor UX | Engine trait allows swapping to piper later |
 | DAG pipeline complexity vs. actual usage | Low | Over-engineering | Phase 4 is last; validate need with Phase 1-3 usage first |
-| Actor message ordering edge cases | Low | Subtle bugs | Keep bus routing deterministic (no broadcast), extensive tests |
+| Actor message ordering edge cases | Low | Subtle bugs | Topic-based routing with static subscription table, extensive tests |
+| Always-on mic privacy concerns | Medium | User trust | Opt-in only, clear documentation, prefer PipeWire passive source |
+| WakewordActor + CoreActor dual ASR memory | Low | ~600MB total | Acceptable on 32GB; allow lighter model for wakeword |
+| HTTP handler correctness (chunked responses) | Medium | Broken LLM integration | Use ureq instead of raw std::net |
+| Thread explosion from wide DAGs + concurrent IPC | Low | Resource exhaustion | Configurable max_parallel_stages and max_concurrent_executions |
