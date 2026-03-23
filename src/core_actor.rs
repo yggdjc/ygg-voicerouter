@@ -17,6 +17,54 @@ const MIN_RECORDING_SECS: f32 = 0.3;
 /// Consecutive silence duration (seconds) before auto-stopping recording.
 const SILENCE_AUTO_STOP_SECS: f32 = 1.5;
 
+/// Why a recording was automatically stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopReason {
+    /// Silence detected after speech (wakeword mode only).
+    Silence,
+    /// Recording exceeded max duration (hotkey mode only).
+    Timeout,
+}
+
+/// Pure-logic check for whether a recording should auto-stop.
+///
+/// Wakeword-triggered recordings stop on silence; hotkey-triggered recordings
+/// stop on timeout. This separation prevents silence auto-stop from cutting
+/// off hotkey dictation mid-pause.
+pub struct RecordingStopCheck {
+    pub is_wakeword: bool,
+    pub speech_detected: bool,
+    pub silence_duration: Duration,
+    pub max_record: Duration,
+}
+
+impl RecordingStopCheck {
+    /// Returns `Some(reason)` if the recording should stop now.
+    #[must_use]
+    pub fn should_stop(
+        &self,
+        silence_since: Option<Instant>,
+        recording_start: Instant,
+    ) -> Option<StopReason> {
+        if self.is_wakeword {
+            // Wakeword: stop on silence after speech, no timeout.
+            if self.speech_detected {
+                if let Some(since) = silence_since {
+                    if since.elapsed() >= self.silence_duration {
+                        return Some(StopReason::Silence);
+                    }
+                }
+            }
+        } else {
+            // Hotkey: stop on timeout only, no silence auto-stop.
+            if recording_start.elapsed() >= self.max_record {
+                return Some(StopReason::Timeout);
+            }
+        }
+        None
+    }
+}
+
 enum CoreState {
     Idle,
     Recording,
@@ -120,63 +168,54 @@ impl Actor for CoreActor {
                             if let Ok(chunk) = chunk {
                                 recording_buffer.extend_from_slice(&chunk);
 
-                                // Silence detection: check RMS of latest chunk.
+                                // Update silence tracking from latest chunk RMS.
                                 let rms = audio::compute_rms(&chunk);
                                 if rms >= silence_threshold {
                                     speech_detected = true;
                                     silence_since = None;
-                                } else if speech_detected {
-                                    // Only start silence timer after speech was detected.
-                                    if silence_since.is_none() {
-                                        silence_since = Some(Instant::now());
-                                    }
-                                    if let Some(since) = silence_since {
-                                        if since.elapsed() >= silence_auto_stop {
-                                            log::info!(
-                                                "[core] silence detected, auto-stopping"
-                                            );
-                                            let elapsed = recording_start
-                                                .take()
-                                                .map_or(0.0, |t| t.elapsed().as_secs_f32());
-                                            finalize_recording(
-                                                &recording_buffer, denoise_enabled,
-                                                &mut asr_engine, &mut punctuator,
-                                                &self.config, &outbox, elapsed,
-                                                &mut noise_tracker, &active_wakeword,
-                                            );
-                                            recording_buffer.clear();
-                                            silence_since = None;
-                                            speech_detected = false;
-                                            active_wakeword = None;
-                                            // Cooldown: 2s for inject to complete.
-                                            cooldown_until = Some(Instant::now() + Duration::from_secs(2));
-                                            outbox.send(Message::StopListening).ok();
-                                            state = CoreState::Idle;
-                                        }
-                                    }
+                                } else if speech_detected && silence_since.is_none() {
+                                    silence_since = Some(Instant::now());
                                 }
                             }
-                            // Check recording timeout.
+
+                            // Check auto-stop conditions (mode-dependent).
                             if let Some(start) = recording_start {
-                                if start.elapsed() >= max_record {
-                                    log::warn!(
-                                        "[core] recording exceeded {}s limit, \
-                                         force-stopping",
-                                        self.config.audio.max_record_seconds
-                                    );
+                                let stop_check = RecordingStopCheck {
+                                    is_wakeword: active_wakeword.is_some(),
+                                    speech_detected,
+                                    silence_duration: silence_auto_stop,
+                                    max_record,
+                                };
+                                if let Some(reason) = stop_check.should_stop(silence_since, start) {
+                                    match reason {
+                                        StopReason::Silence => log::info!(
+                                            "[core] silence detected, auto-stopping"
+                                        ),
+                                        StopReason::Timeout => log::warn!(
+                                            "[core] recording exceeded {}s limit, \
+                                             force-stopping",
+                                            self.config.audio.max_record_seconds
+                                        ),
+                                    }
+                                    let elapsed = recording_start
+                                        .take()
+                                        .map_or(0.0, |t| t.elapsed().as_secs_f32());
                                     finalize_recording(
                                         &recording_buffer, denoise_enabled,
                                         &mut asr_engine, &mut punctuator,
-                                        &self.config, &outbox,
-                                        recording_start.take().map_or(
-                                            0.0, |t| t.elapsed().as_secs_f32(),
-                                        ),
+                                        &self.config, &outbox, elapsed,
                                         &mut noise_tracker, &active_wakeword,
                                     );
                                     recording_buffer.clear();
                                     recording_start = None;
                                     silence_since = None;
                                     speech_detected = false;
+                                    // Cooldown only for wakeword (prevent retrigger).
+                                    if active_wakeword.is_some() {
+                                        cooldown_until = Some(
+                                            Instant::now() + Duration::from_secs(2),
+                                        );
+                                    }
                                     active_wakeword = None;
                                     outbox.send(Message::StopListening).ok();
                                     state = CoreState::Idle;
