@@ -11,3 +11,4 @@ pub mod inject;
 pub mod ipc;
 pub mod postprocess;
 pub mod sound;
+pub mod tts;
