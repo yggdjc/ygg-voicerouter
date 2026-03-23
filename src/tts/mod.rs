@@ -106,7 +106,8 @@ fn play_audio(samples: &[f32], sample_rate: u32) -> anyhow::Result<()> {
         buffer_size: cpal::BufferSize::Default,
     };
 
-    let samples = samples.to_vec();
+    // Amplify: Kokoro output is quiet, boost by 2x with clamp.
+    let samples: Vec<f32> = samples.iter().map(|&s| (s * 2.0).clamp(-1.0, 1.0)).collect();
     let pos = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let pos_clone = std::sync::Arc::clone(&pos);
     let len = samples.len();

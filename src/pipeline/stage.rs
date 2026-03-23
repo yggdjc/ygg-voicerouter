@@ -54,7 +54,7 @@ impl Condition {
     #[must_use]
     pub fn strip_prefix<'a>(&self, text: &'a str) -> Option<&'a str> {
         match self {
-            Self::StartsWith(prefix) => text.strip_prefix(prefix.as_str()).map(|s| s.trim_start()),
+            Self::StartsWith(prefix) => text.strip_prefix(prefix.as_str()).map(|s| s.trim()),
             _ => None,
         }
     }
