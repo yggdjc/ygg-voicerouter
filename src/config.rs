@@ -295,7 +295,7 @@ impl Default for TtsConfig {
         Self {
             enabled: false,
             engine: "sherpa-onnx".to_owned(),
-            model: "vits-zh".to_owned(),
+            model: "kokoro-tts".to_owned(),
             model_dir: "~/.cache/voicerouter/models".to_owned(),
             speed: 1.0,
             mute_mic_during_playback: true,
