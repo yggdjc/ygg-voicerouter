@@ -129,7 +129,7 @@ impl Default for AudioConfig {
             channels: 1,
             silence_threshold: 0.01,
             silence_duration: 1.5,
-            max_record_seconds: 30,
+            max_record_seconds: 60,
             denoise: true,
         }
     }

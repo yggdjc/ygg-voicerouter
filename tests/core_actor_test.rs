@@ -25,7 +25,7 @@ fn hotkey_check() -> RecordingStopCheck {
         is_wakeword: false,
         speech_detected: true,
         silence_duration: Duration::from_secs_f32(1.5),
-        max_record: Duration::from_secs(30),
+        max_record: Duration::from_secs(60),
     }
 }
 
@@ -90,7 +90,7 @@ fn hotkey_does_not_stop_on_silence() {
 #[test]
 fn hotkey_stops_on_timeout() {
     let check = hotkey_check();
-    let recording_start = Instant::now() - Duration::from_secs(31);
+    let recording_start = Instant::now() - Duration::from_secs(61);
 
     assert_eq!(
         check.should_stop(None, recording_start),
