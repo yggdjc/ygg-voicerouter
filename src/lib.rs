@@ -1,6 +1,7 @@
 //! voicerouter — Voice router for Linux: offline ASR with pluggable handlers.
 
 pub mod actor;
+pub mod audio_source;
 pub mod pipeline;
 pub mod asr;
 pub mod audio;
