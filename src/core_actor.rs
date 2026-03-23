@@ -106,12 +106,20 @@ impl Actor for CoreActor {
                                 state = CoreState::Idle;
                             }
                             Ok(Message::CancelRecording) => {
+                                // Discard audio and restart recording silently
+                                // (no beep — Auto mode toggle transition).
                                 audio.stop_recording();
-                                recording_start = None;
                                 log::info!(
-                                    "[core] recording cancelled, audio discarded"
+                                    "[core] recording cancelled, restarting for toggle"
                                 );
-                                state = CoreState::Idle;
+                                if let Err(e) = audio.start_recording() {
+                                    log::error!("[core] restart failed: {e:#}");
+                                    recording_start = None;
+                                    state = CoreState::Idle;
+                                } else {
+                                    recording_start = Some(Instant::now());
+                                    // Stay in Recording state — no beep, no state change.
+                                }
                             }
                             Ok(Message::MuteInput) => {
                                 audio.stop_recording();

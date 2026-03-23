@@ -285,8 +285,9 @@ impl Actor for HotkeyActor {
                         outbox.send(Message::StopListening).ok();
                     }
                     HotkeyEvent::CancelAndToggle => {
+                        // CancelRecording tells CoreActor to discard audio
+                        // and restart recording silently (no second beep).
                         outbox.send(Message::CancelRecording).ok();
-                        outbox.send(Message::StartListening).ok();
                     }
                 }
             }

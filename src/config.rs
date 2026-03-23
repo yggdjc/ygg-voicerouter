@@ -385,7 +385,7 @@ impl Config {
         }
         if !self.router.rules.is_empty() {
             log::warn!("[config] [router] is deprecated; migrate to [pipeline]");
-            return self.router.rules.iter().enumerate().map(|(i, rule)| StageConfig {
+            let mut stages: Vec<StageConfig> = self.router.rules.iter().enumerate().map(|(i, rule)| StageConfig {
                 name: format!("router_rule_{i}"),
                 handler: rule.handler.clone(),
                 command: rule.command.clone(),
@@ -396,6 +396,19 @@ impl Config {
                 body: None,
                 timeout: default_stage_timeout(),
             }).collect();
+            // Append default inject as fallback for unmatched text.
+            stages.push(StageConfig {
+                name: "default".into(),
+                handler: "inject".into(),
+                command: None,
+                condition: None,
+                after: None,
+                url: None,
+                method: None,
+                body: None,
+                timeout: default_stage_timeout(),
+            });
+            return stages;
         }
 
         // No pipeline config → default single inject handler.
@@ -541,10 +554,13 @@ mod tests {
         let toml = "[[router.rules]]\ntrigger = \"搜索\"\nhandler = \"shell\"\ncommand = \"firefox https://google.com/search?q={text}\"\n";
         let config: Config = toml::from_str(toml).expect("parse failed");
         let stages = config.effective_pipeline_stages();
-        assert_eq!(stages.len(), 1);
+        assert_eq!(stages.len(), 2);
         assert_eq!(stages[0].name, "router_rule_0");
         assert_eq!(stages[0].handler, "shell");
         assert_eq!(stages[0].condition.as_deref(), Some("starts_with:搜索"));
+        // Fallback inject stage appended automatically.
+        assert_eq!(stages[1].name, "default");
+        assert_eq!(stages[1].handler, "inject");
     }
 
     #[test]
