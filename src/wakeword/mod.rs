@@ -189,6 +189,15 @@ fn emit_action(
                     .ok();
             }
         }
+        // Full conversation handling is implemented in Task 7 (ConversationActor).
+        // For now, fall back to start-recording so the daemon compiles and runs.
+        crate::config::WakewordAction::StartConversation => {
+            outbox
+                .send(Message::StartListening {
+                    wakeword: Some(phrase.to_string()),
+                })
+                .ok();
+        }
     }
 }
 

@@ -78,6 +78,7 @@ pub enum WakewordAction {
     #[default]
     StartRecording,
     PipelinePassthrough,
+    StartConversation,
 }
 
 // ---------------------------------------------------------------------------
@@ -358,6 +359,60 @@ impl Default for LlmConfig {
     }
 }
 
+/// LLM backend configuration for conversation mode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConversationLlmConfig {
+    pub endpoint: String,
+    pub model: String,
+    pub system_prompt: String,
+}
+
+impl Default for ConversationLlmConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: "http://localhost:11434/v1".to_owned(),
+            model: "qwen3.5:4b".to_owned(),
+            system_prompt: "你是一个简洁的语音助手。用口语化的中文回答，保持简短。\
+                必须以JSON格式回复，包含reply(回答文本)和confidence(0-1置信度)两个字段。"
+                .to_owned(),
+        }
+    }
+}
+
+/// Interactive conversation mode configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConversationConfig {
+    pub enabled: bool,
+    pub timeout_seconds: f64,
+    pub max_turn_seconds: f64,
+    pub end_phrases: Vec<String>,
+    pub confidence_high: f64,
+    pub confidence_low: f64,
+    pub low_confidence_prefix: String,
+    pub low_confidence_reject: String,
+    pub llm_timeout_seconds: u64,
+    pub llm: ConversationLlmConfig,
+}
+
+impl Default for ConversationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_seconds: 30.0,
+            max_turn_seconds: 30.0,
+            end_phrases: vec!["结束".into(), "再见".into(), "没事了".into()],
+            confidence_high: 0.8,
+            confidence_low: 0.5,
+            low_confidence_prefix: "我不太确定，".into(),
+            low_confidence_reject: "抱歉，我无法回答这个问题".into(),
+            llm_timeout_seconds: 15,
+            llm: ConversationLlmConfig::default(),
+        }
+    }
+}
+
 /// Continuous (always-on) listening mode configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -426,9 +481,25 @@ pub struct Config {
     pub tts: TtsConfig,
     pub wakeword: WakewordConfig,
     pub continuous: ContinuousConfig,
+    pub conversation: ConversationConfig,
 }
 
 impl Config {
+    /// Validate cross-field constraints.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if mutually exclusive options are both enabled.
+    pub fn validate(&self) -> Result<()> {
+        if self.conversation.enabled && self.continuous.enabled {
+            anyhow::bail!(
+                "conversation and continuous modes are mutually exclusive; \
+                 disable one of them in config"
+            );
+        }
+        Ok(())
+    }
+
     /// Return the effective pipeline stages, migrating from legacy `[router]` rules
     /// if `[pipeline]` is not configured.
     ///
@@ -646,5 +717,54 @@ mod tests {
         let config = Config::default();
         assert!(!config.wakeword.enabled);
         assert!(config.wakeword.phrases.is_empty());
+    }
+
+    #[test]
+    fn conversation_config_defaults() {
+        let config = Config::default();
+        assert!(!config.conversation.enabled);
+        assert_eq!(config.conversation.timeout_seconds, 30.0);
+        assert_eq!(config.conversation.max_turn_seconds, 30.0);
+        assert_eq!(config.conversation.confidence_high, 0.8);
+        assert_eq!(config.conversation.confidence_low, 0.5);
+    }
+
+    #[test]
+    fn conversation_config_deserializes() {
+        let toml = r#"
+[conversation]
+enabled = true
+timeout_seconds = 60
+[conversation.llm]
+endpoint = "http://localhost:11434/v1"
+model = "qwen3.5:4b"
+"#;
+        let config: Config = toml::from_str(toml).expect("parse failed");
+        assert!(config.conversation.enabled);
+        assert_eq!(config.conversation.timeout_seconds, 60.0);
+        assert_eq!(config.conversation.llm.endpoint, "http://localhost:11434/v1");
+    }
+
+    #[test]
+    fn wakeword_action_start_conversation() {
+        let toml = "[wakeword]\naction = \"start_conversation\"\n";
+        let config: Config = toml::from_str(toml).expect("parse failed");
+        assert_eq!(config.wakeword.action, WakewordAction::StartConversation);
+    }
+
+    #[test]
+    fn mutual_exclusivity_validation() {
+        let mut config = Config::default();
+        config.conversation.enabled = true;
+        config.continuous.enabled = true;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn mutual_exclusivity_one_enabled_ok() {
+        let mut config = Config::default();
+        config.conversation.enabled = true;
+        config.continuous.enabled = false;
+        assert!(config.validate().is_ok());
     }
 }
