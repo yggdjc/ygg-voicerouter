@@ -1,59 +1,55 @@
 //! Tests for VAD (Voice Activity Detection) module.
 
-use voicerouter::continuous::vad::EnergyVad;
+use voicerouter::vad::{VadConfig, VadDetector, VadEvent};
 
 #[test]
 fn detects_speech_segment() {
-    // 16kHz, threshold 0.02
-    let mut vad = EnergyVad::new(16000, 0.02);
-    let mut segments: Vec<Vec<f32>> = Vec::new();
+    let mut vad = VadDetector::new(&VadConfig { sample_rate: 16000, threshold: 0.02 });
 
-    // Feed 500ms silence
     let silence = vec![0.001f32; 8000];
-    vad.feed(&silence, &mut |seg: &[f32]| segments.push(seg.to_vec()));
-    assert!(segments.is_empty());
+    let events = vad.feed(&silence);
+    assert!(events.is_empty());
 
-    // Feed 500ms speech (loud signal)
     let speech: Vec<f32> = (0..8000).map(|i| 0.3 * (i as f32 * 0.1).sin()).collect();
-    vad.feed(&speech, &mut |seg: &[f32]| segments.push(seg.to_vec()));
-    assert!(segments.is_empty(), "segment should not emit during speech");
+    let events = vad.feed(&speech);
+    assert!(events.is_empty(), "segment should not emit during speech");
 
-    // Feed 500ms silence to trigger end-of-speech
-    vad.feed(&silence, &mut |seg: &[f32]| segments.push(seg.to_vec()));
+    let silence = vec![0.001f32; 16000];
+    let mut events = vad.feed(&silence);
+    if events.is_empty() {
+        events = vad.feed(&silence);
+    }
 
-    // May need more silence to pass the min silence duration
-    vad.feed(&silence, &mut |seg: &[f32]| segments.push(seg.to_vec()));
-
-    assert_eq!(segments.len(), 1, "should emit exactly one segment");
-    assert!(!segments[0].is_empty());
+    assert_eq!(events.len(), 1, "should emit exactly one segment");
+    assert!(matches!(&events[0], VadEvent::Segment(s) if !s.is_empty()));
 }
 
 #[test]
 fn ignores_pure_silence() {
-    let mut vad = EnergyVad::new(16000, 0.02);
-    let mut segments: Vec<Vec<f32>> = Vec::new();
-
-    // Feed 2 seconds of silence
+    let mut vad = VadDetector::new(&VadConfig { sample_rate: 16000, threshold: 0.02 });
     let silence = vec![0.001f32; 32000];
-    vad.feed(&silence, &mut |seg: &[f32]| segments.push(seg.to_vec()));
-
-    assert!(segments.is_empty());
+    let events = vad.feed(&silence);
+    assert!(events.is_empty());
 }
 
 #[test]
 fn minimum_segment_length() {
-    let mut vad = EnergyVad::new(16000, 0.02);
-    let mut segments: Vec<Vec<f32>> = Vec::new();
-
-    // Feed very short speech (50ms) — too short, should be discarded
+    let mut vad = VadDetector::new(&VadConfig { sample_rate: 16000, threshold: 0.02 });
     let short_speech: Vec<f32> = (0..800).map(|i| 0.3 * (i as f32 * 0.1).sin()).collect();
-    vad.feed(&short_speech, &mut |seg: &[f32]| segments.push(seg.to_vec()));
+    let events = vad.feed(&short_speech);
+    assert!(events.is_empty());
 
-    // Feed silence to flush
     let silence = vec![0.001f32; 16000];
-    vad.feed(&silence, &mut |seg: &[f32]| segments.push(seg.to_vec()));
-    vad.feed(&silence, &mut |seg: &[f32]| segments.push(seg.to_vec()));
+    let mut events = vad.feed(&silence);
+    events.extend(vad.feed(&silence));
+    assert!(events.is_empty(), "very short speech should be discarded");
+}
 
-    // Very short segments should be discarded
-    assert!(segments.is_empty(), "very short speech should be discarded");
+#[test]
+fn in_speech_accessor() {
+    let mut vad = VadDetector::new(&VadConfig { sample_rate: 16000, threshold: 0.02 });
+    assert!(!vad.in_speech());
+    let speech: Vec<f32> = vec![0.1; 800];
+    let _ = vad.feed(&speech);
+    assert!(vad.in_speech());
 }

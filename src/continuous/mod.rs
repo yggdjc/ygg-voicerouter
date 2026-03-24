@@ -5,7 +5,6 @@
 
 pub mod intent;
 pub mod speaker;
-pub mod vad;
 
 use std::time::{Duration, Instant};
 
@@ -20,7 +19,7 @@ use crate::pipeline::handler::RiskLevel;
 use crate::pipeline::handlers::build_handler;
 
 use intent::{Intent, IntentFilter};
-use vad::EnergyVad;
+use crate::vad::{VadConfig, VadDetector, VadEvent};
 
 pub struct ContinuousActor {
     config: Config,
@@ -43,7 +42,7 @@ struct StageInfo {
 
 /// Runtime state initialised once at actor start.
 struct RuntimeState {
-    vad: EnergyVad,
+    vad: VadDetector,
     asr_engine: Option<AsrEngine>,
     stage_infos: Vec<StageInfo>,
     intent_filter: IntentFilter,
@@ -54,10 +53,10 @@ struct RuntimeState {
 
 /// Build all runtime state from configuration.
 fn init_runtime(config: &Config) -> RuntimeState {
-    let vad = EnergyVad::new(
-        config.audio.sample_rate,
-        config.audio.silence_threshold as f32,
-    );
+    let vad = VadDetector::new(&VadConfig {
+        sample_rate: config.audio.sample_rate,
+        threshold: config.audio.silence_threshold as f32,
+    });
 
     let stage_configs = config.effective_pipeline_stages();
     let stage_infos: Vec<StageInfo> = stage_configs
@@ -280,11 +279,11 @@ fn vad_feed(
     outbox: &Sender<Message>,
     pending_confirm: &mut Option<(String, String)>,
 ) {
-    // Collect segments first to avoid borrowing state in the VAD callback.
-    let mut segments: Vec<Vec<f32>> = Vec::new();
-    state.vad.feed(chunk, &mut |segment| {
-        segments.push(segment.to_vec());
-    });
+    let events = state.vad.feed(chunk);
+    let segments: Vec<Vec<f32>> = events
+        .into_iter()
+        .map(|e| match e { VadEvent::Segment(s) => s })
+        .collect();
 
     for segment in &segments {
         if pending_confirm.is_some() {
