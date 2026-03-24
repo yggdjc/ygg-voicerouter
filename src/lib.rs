@@ -14,3 +14,4 @@ pub mod postprocess;
 pub mod sound;
 pub mod tts;
 pub mod wakeword;
+pub mod continuous;
