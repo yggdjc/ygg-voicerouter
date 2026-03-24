@@ -124,7 +124,7 @@ fn build_config(
             },
             tokens: Some(tokens_path),
             num_threads: 1,
-            provider: Some("cpu".into()),
+            provider: Some(config.provider.clone()),
             ..Default::default()
         },
         "whisper-tiny-en" | "whisper-base-en" => {
@@ -143,7 +143,7 @@ fn build_config(
                 },
                 tokens: Some(tokens_path),
                 num_threads: 1,
-                provider: Some("cpu".into()),
+                provider: Some(config.provider.clone()),
                 ..Default::default()
             }
         }
@@ -165,7 +165,7 @@ fn build_config(
                     ..Default::default()
                 },
                 num_threads: 2,
-                provider: Some("cpu".into()),
+                provider: Some(config.provider.clone()),
                 ..Default::default()
             }
         }

@@ -143,6 +143,8 @@ pub struct AsrConfig {
     pub model: String,
     /// Directory where model files are stored (tilde-expanded at runtime).
     pub model_dir: String,
+    /// ONNX Runtime execution provider: `cpu` or `cuda`.
+    pub provider: String,
 }
 
 impl Default for AsrConfig {
@@ -150,6 +152,7 @@ impl Default for AsrConfig {
         Self {
             model: "paraformer-zh".to_owned(),
             model_dir: "~/.cache/voicerouter/models".to_owned(),
+            provider: "cpu".to_owned(),
         }
     }
 }

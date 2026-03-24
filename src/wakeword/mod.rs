@@ -61,6 +61,7 @@ impl Actor for WakewordActor {
         let asr_config = crate::config::AsrConfig {
             model: asr_model,
             model_dir: self.config.asr.model_dir.clone(),
+            provider: self.config.asr.provider.clone(),
         };
         let mut asr = match AsrEngine::new(&asr_config) {
             Ok(e) => e,
