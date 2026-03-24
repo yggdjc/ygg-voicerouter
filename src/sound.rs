@@ -43,13 +43,13 @@ pub fn beep_start() -> Result<()> {
     })
 }
 
-/// Play a descending G5→C5 with perfect-fifth overtones (70 ms + 15 ms gap + 70 ms) — done.
+/// Play an ascending C5→G5 with perfect-fifth overtones (70 ms + 15 ms gap + 70 ms) — done.
 pub fn beep_done() -> Result<()> {
     spawn_playback("voicerouter-cue-done", || {
         let fifth_harmonics: &[(f32, f32)] = &[(1.0, 1.0), (1.5, 0.4), (2.0, 0.2)];
-        let mut pcm = gen_harmonic_tone(G5, 70, fifth_harmonics);
+        let mut pcm = gen_harmonic_tone(C5, 70, fifth_harmonics);
         pcm.extend(gen_silence(15));
-        pcm.extend(gen_harmonic_tone(C5, 70, fifth_harmonics));
+        pcm.extend(gen_harmonic_tone(G5, 70, fifth_harmonics));
         play_pcm_blocking(&pcm, "done")
     })
 }
