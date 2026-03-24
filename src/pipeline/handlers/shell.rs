@@ -4,7 +4,7 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
-use crate::pipeline::handler::{Handler, HandlerResult};
+use crate::pipeline::handler::{Handler, HandlerResult, RiskLevel};
 use crate::pipeline::stage::StageContext;
 
 pub struct ShellHandler;
@@ -12,6 +12,10 @@ pub struct ShellHandler;
 impl Handler for ShellHandler {
     fn name(&self) -> &str {
         "shell"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::High
     }
 
     fn handle(&self, text: &str, ctx: &StageContext) -> Result<HandlerResult> {

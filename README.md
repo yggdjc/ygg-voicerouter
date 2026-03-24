@@ -169,6 +169,25 @@ stride_seconds = 1.0
 action = "start_recording"   # start_recording | pipeline_passthrough
 ```
 
+### Continuous Listening
+
+Always-on mode with VAD and intent classification. Detects speech segments, transcribes, and classifies as command or ambient speech.
+
+```toml
+[continuous]
+enabled = false              # off by default, enable explicitly
+vad_model = "silero"
+
+[continuous.llm]
+endpoint = "http://localhost:8080/v1"
+model = "claude-haiku"
+api_key_env = "VOICEROUTER_LLM_KEY"
+```
+
+High-risk actions (shell, http, pipe) require hotkey confirmation. Low-risk actions (inject, speak, transform) execute silently.
+
+Speaker verification (`speaker_verify`) is planned for a future release.
+
 ### Injection Method
 
 ```toml

@@ -59,6 +59,21 @@ stride_seconds = 1.0
 # "start_recording" or "pipeline_passthrough"
 action = "start_recording"
 
+[continuous]
+# Always-on listening with VAD + intent classification.
+enabled = false
+# Speaker verification is planned for a future release.
+# speaker_verify = false
+# speaker_threshold = 0.6
+# speaker_model = "3dspeaker"
+vad_model = "silero"
+
+[continuous.llm]
+# OpenAI-compatible endpoint for intent classification of ambiguous speech.
+endpoint = ""
+model = "claude-haiku"
+api_key_env = "VOICEROUTER_LLM_KEY"
+
 [ipc]
 enabled = true
 socket_path = ""      # default: $XDG_RUNTIME_DIR/voicerouter.sock

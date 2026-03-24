@@ -330,6 +330,59 @@ impl Default for WakewordConfig {
     }
 }
 
+/// LLM backend configuration for continuous-listening intent routing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LlmConfig {
+    /// Base URL of the OpenAI-compatible chat-completions endpoint.
+    pub endpoint: String,
+    /// Model identifier to pass in requests.
+    pub model: String,
+    /// Name of the environment variable that holds the API key.
+    pub api_key_env: String,
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            model: "claude-haiku".to_owned(),
+            api_key_env: "VOICEROUTER_LLM_KEY".to_owned(),
+        }
+    }
+}
+
+/// Continuous (always-on) listening mode configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContinuousConfig {
+    /// Enable continuous listening mode.
+    pub enabled: bool,
+    /// Gate transcription on speaker verification.
+    pub speaker_verify: bool,
+    /// Cosine-similarity threshold for accepting a speaker (0.0–1.0).
+    pub speaker_threshold: f64,
+    /// Speaker-embedding model identifier.
+    pub speaker_model: String,
+    /// Voice-activity-detection model identifier.
+    pub vad_model: String,
+    /// LLM used for intent routing in continuous mode.
+    pub llm: LlmConfig,
+}
+
+impl Default for ContinuousConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            speaker_verify: false,
+            speaker_threshold: 0.6,
+            speaker_model: "3dspeaker".to_owned(),
+            vad_model: "silero".to_owned(),
+            llm: LlmConfig::default(),
+        }
+    }
+}
+
 /// Audio feedback (earcon) configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -366,6 +419,7 @@ pub struct Config {
     pub ipc: IpcConfig,
     pub tts: TtsConfig,
     pub wakeword: WakewordConfig,
+    pub continuous: ContinuousConfig,
 }
 
 impl Config {

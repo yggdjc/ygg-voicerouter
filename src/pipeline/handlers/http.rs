@@ -2,13 +2,17 @@
 
 use anyhow::{bail, Result};
 
-use crate::pipeline::handler::{Handler, HandlerResult};
+use crate::pipeline::handler::{Handler, HandlerResult, RiskLevel};
 use crate::pipeline::stage::StageContext;
 
 pub struct HttpHandler;
 
 impl Handler for HttpHandler {
     fn name(&self) -> &str { "http" }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::High
+    }
 
     fn handle(&self, text: &str, ctx: &StageContext) -> Result<HandlerResult> {
         let url = ctx.get("url")

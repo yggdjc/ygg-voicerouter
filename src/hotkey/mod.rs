@@ -227,6 +227,7 @@ pub use self::evdev::HotkeyMonitor;
 // ---------------------------------------------------------------------------
 
 use crate::actor::{Actor, Message};
+use crate::sound;
 use crossbeam::channel::{Receiver, Sender};
 
 /// Actor wrapper around [`HotkeyMonitor`].
@@ -261,33 +262,67 @@ impl Actor for HotkeyActor {
 
         log::info!("[hotkey] listening for '{}'", self.config.key);
 
+        // Pending confirmation: (text, stage, deadline).
+        let mut pending_confirm: Option<(String, String, Instant)> = None;
+
         loop {
-            if let Ok(msg) = inbox.try_recv() {
+            // Drain inbox — process all queued messages before polling.
+            while let Ok(msg) = inbox.try_recv() {
                 match msg {
+                    Message::ConfirmAction { text, stage } => {
+                        sound::beep_confirm()
+                            .unwrap_or_else(|e| log::warn!("[hotkey] beep_confirm failed: {e}"));
+                        let deadline = Instant::now() + Duration::from_secs(3);
+                        log::info!(
+                            "[hotkey] awaiting confirmation for stage '{stage}' (3s timeout)"
+                        );
+                        pending_confirm = Some((text, stage, deadline));
+                    }
                     Message::StopListening => {
                         log::debug!("[hotkey] received StopListening, resetting state");
                         monitor.reset_state();
                     }
                     Message::Shutdown => {
                         log::info!("[hotkey] shutting down");
-                        break;
+                        return;
                     }
                     _ => {}
                 }
             }
 
+            // Handle confirmation timeout.
+            if let Some((_, ref stage, deadline)) = pending_confirm {
+                if Instant::now() >= deadline {
+                    log::info!("[hotkey] confirmation timeout for stage '{stage}', rejecting");
+                    outbox.send(Message::ActionRejected).ok();
+                    pending_confirm = None;
+                }
+            }
+
+            // Poll hotkey device.
             if let Some(event) = monitor.poll() {
-                match event {
-                    HotkeyEvent::StartRecording => {
-                        outbox.send(Message::StartListening { wakeword: None }).ok();
+                // If waiting for confirmation, any hotkey press confirms the action.
+                if pending_confirm.is_some() {
+                    if matches!(event, HotkeyEvent::StartRecording | HotkeyEvent::CancelAndToggle)
+                    {
+                        let (_, stage, _) = pending_confirm.take().unwrap();
+                        log::info!("[hotkey] action confirmed by user for stage '{stage}'");
+                        outbox.send(Message::ActionConfirmed).ok();
                     }
-                    HotkeyEvent::StopRecording => {
-                        outbox.send(Message::StopListening).ok();
-                    }
-                    HotkeyEvent::CancelAndToggle => {
-                        // CancelRecording tells CoreActor to discard audio
-                        // and restart recording silently (no second beep).
-                        outbox.send(Message::CancelRecording).ok();
+                    // Ignore StopRecording (key-up) while confirming — no normal flow.
+                } else {
+                    match event {
+                        HotkeyEvent::StartRecording => {
+                            outbox.send(Message::StartListening { wakeword: None }).ok();
+                        }
+                        HotkeyEvent::StopRecording => {
+                            outbox.send(Message::StopListening).ok();
+                        }
+                        HotkeyEvent::CancelAndToggle => {
+                            // CancelRecording tells CoreActor to discard audio
+                            // and restart recording silently (no second beep).
+                            outbox.send(Message::CancelRecording).ok();
+                        }
                     }
                 }
             }

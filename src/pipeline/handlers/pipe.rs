@@ -5,13 +5,17 @@ use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 
-use crate::pipeline::handler::{Handler, HandlerResult};
+use crate::pipeline::handler::{Handler, HandlerResult, RiskLevel};
 use crate::pipeline::stage::StageContext;
 
 pub struct PipeHandler;
 
 impl Handler for PipeHandler {
     fn name(&self) -> &str { "pipe" }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::High
+    }
 
     fn handle(&self, text: &str, ctx: &StageContext) -> Result<HandlerResult> {
         let cmd = ctx.get("command")

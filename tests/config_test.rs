@@ -8,6 +8,37 @@ use std::io::Write as _;
 use tempfile::NamedTempFile;
 use voicerouter::config::{Config, HotkeyMode, InjectMethod, PunctMode};
 
+#[test]
+fn continuous_config_deserializes() {
+    let toml = r#"
+[continuous]
+enabled = true
+speaker_verify = true
+speaker_threshold = 0.7
+speaker_model = "3dspeaker"
+vad_model = "silero"
+
+[continuous.llm]
+endpoint = "http://localhost:8080/v1"
+model = "claude-haiku"
+api_key_env = "TEST_KEY"
+"#;
+    let config: Config = toml::from_str(toml).expect("parse failed");
+    assert!(config.continuous.enabled);
+    assert_eq!(config.continuous.speaker_threshold, 0.7);
+    assert_eq!(config.continuous.llm.model, "claude-haiku");
+    assert_eq!(config.continuous.llm.api_key_env, "TEST_KEY");
+}
+
+#[test]
+fn continuous_config_defaults() {
+    let config = Config::default();
+    assert!(!config.continuous.enabled);
+    assert!(!config.continuous.speaker_verify);
+    assert_eq!(config.continuous.speaker_threshold, 0.6);
+    assert_eq!(config.continuous.llm.model, "claude-haiku");
+}
+
 /// The bundled default config shipped to users by `voicerouter setup`.
 const DEFAULT_CONFIG: &str = include_str!("../config.default.toml");
 

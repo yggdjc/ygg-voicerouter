@@ -4,6 +4,7 @@
 //! - `paraformer-zh`: Chinese offline model (bilingual zh/en).
 //! - `whisper-tiny-en`, `whisper-base-en`: Whisper variants for English.
 //! - `funasr-nano`: FunASR Nano 0.8B LLM-based model (zh/en/ja, with ITN).
+//! - `silero-vad`: Silero VAD ONNX model for voice activity detection (~2 MB).
 //!
 //! Model files are stored under a configurable directory (default:
 //! `~/.cache/voicerouter/models/<model_name>/`).
@@ -143,8 +144,18 @@ pub fn model_info(model_name: &str, model_dir: &Path) -> Result<ModelInfo> {
                 local_path: base.join("model.int8.onnx"),
             }],
         }),
+        "silero-vad" => Ok(ModelInfo {
+            name: model_name.to_owned(),
+            files: vec![ModelFile {
+                url: "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/\
+                      silero_vad.onnx"
+                    .to_owned(),
+                local_path: base.join("silero_vad.onnx"),
+            }],
+        }),
         other => bail!(
-            "unsupported model '{other}'. Supported: paraformer-zh, funasr-nano, ct-punc, whisper-tiny-en, whisper-base-en"
+            "unsupported model '{other}'. Supported: paraformer-zh, funasr-nano, ct-punc, \
+             whisper-tiny-en, whisper-base-en, silero-vad"
         ),
     }
 }
