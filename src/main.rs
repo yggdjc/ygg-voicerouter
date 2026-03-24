@@ -138,6 +138,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     log::info!("voicerouter starting up (actor mode)");
 
     use voicerouter::actor::{Actor, Bus, Message};
+    use voicerouter::continuous::ContinuousActor;
     use voicerouter::core_actor::CoreActor;
     use voicerouter::hotkey::HotkeyActor;
     use voicerouter::ipc::IpcActor;
@@ -216,6 +217,17 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
         None
     };
 
+    // Continuous actor channel + bus subscriptions (only when enabled).
+    let continuous_channels = if config.continuous.enabled {
+        let (tx, rx) = crossbeam::channel::bounded::<Message>(32);
+        bus.subscribe("Shutdown", tx.clone());
+        bus.subscribe("MuteInput", tx.clone());
+        bus.subscribe("UnmuteInput", tx.clone());
+        Some((tx, rx))
+    } else {
+        None
+    };
+
     // Spawn bus router thread.
     let bus_handle = std::thread::Builder::new()
         .name("bus".into())
@@ -237,7 +249,16 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     let (audio_stop_tx, audio_stop_rx) = crossbeam::channel::bounded::<()>(1);
 
     let audio_config = config.audio.clone();
-    let audio_subscribers = vec![core_audio_tx, wakeword_audio_tx];
+    let mut audio_subscribers = vec![core_audio_tx, wakeword_audio_tx];
+
+    let continuous_audio_rx = if config.continuous.enabled {
+        let (tx, rx) = crossbeam::channel::bounded::<voicerouter::audio_source::AudioChunk>(256);
+        audio_subscribers.push(tx);
+        Some(rx)
+    } else {
+        None
+    };
+
     let audio_handle = std::thread::Builder::new()
         .name("audio_source".into())
         .spawn(move || {
@@ -283,6 +304,23 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
         .name("wakeword".into())
         .spawn(move || wakeword_actor.run(wakeword_rx, bus_tx_wakeword))?;
 
+    let continuous_handle = if let (Some((_cont_tx, cont_rx)), Some(cont_audio_rx)) =
+        (continuous_channels, continuous_audio_rx)
+    {
+        let continuous_actor = ContinuousActor::new(config.clone(), cont_audio_rx);
+        let bus_tx_continuous = bus_tx.clone();
+        Some(
+            std::thread::Builder::new()
+                .name("continuous".into())
+                .spawn(move || continuous_actor.run(cont_rx, bus_tx_continuous))?,
+        )
+    } else {
+        if !config.continuous.enabled {
+            log::info!("[continuous] disabled");
+        }
+        None
+    };
+
     let ipc_handle = if let Some((_ipc_tx, ipc_rx)) = ipc_channels {
         let ipc_actor = IpcActor::new(config.ipc.clone());
         let bus_tx_ipc = bus_tx.clone();
@@ -308,6 +346,9 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let mut handles: Vec<std::thread::JoinHandle<()>> =
         vec![hotkey_handle, core_handle, pipeline_handle, tts_handle, wakeword_handle];
+    if let Some(h) = continuous_handle {
+        handles.push(h);
+    }
     if let Some(h) = ipc_handle {
         handles.push(h);
     }
