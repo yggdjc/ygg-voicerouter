@@ -27,13 +27,13 @@ src/conversation/
 
 ### Modified Components
 
-- `src/llm/client.rs` — add `chat()` method for structured JSON conversation
-- `src/vad/mod.rs` — extract VAD logic from ContinuousActor into shared module
+- `src/llm/client.rs` — add `chat()` method for structured JSON conversation; make `ChatMessage` pub
+- `src/vad/mod.rs` — extract VAD logic from ContinuousActor into shared module (energy-based, matching current impl)
 - `src/continuous/mod.rs` — refactor to use shared `src/vad/`
 - `src/actor.rs` — add `StartConversation` / `EndConversation` messages
-- `src/wakeword/mod.rs` — add `start_conversation` action
-- `src/main.rs` — spawn ConversationActor, register bus subscriptions
-- `src/config.rs` — add `[conversation]` config section
+- `src/wakeword/mod.rs` — add `start_conversation` action; add `StartConversation` variant to `WakewordAction` enum in config.rs; handle in `emit_action()`
+- `src/main.rs` — spawn ConversationActor, register bus subscriptions; wire dedicated `audio_rx: Receiver<AudioChunk>` from AudioSource (audio chunks use direct crossbeam channels, NOT the bus)
+- `src/config.rs` — add `[conversation]` config section; add `StartConversation` to `WakewordAction` enum; validate mutual exclusivity: `conversation.enabled` and `continuous.enabled` cannot both be true (error at config load)
 
 ### Data Flow
 
@@ -47,7 +47,7 @@ WakewordActor ──StartConversation──▶ ConversationActor
           ┌──────────────────────────────┤ LOOP:
           │                              │
           ▼                              │
-  AudioSource ──chunks──▶ VAD ──speech──▶ ASR
+  AudioSource ──chunks (crossbeam channel)──▶ VAD ──speech──▶ ASR
                                          │
                                     transcript
                                          │
@@ -77,8 +77,9 @@ Listening ──VAD speech──▶ Recording
 Recording ──VAD silence──▶ Transcribing
 Transcribing ──ASR done──▶ Thinking
 Thinking ──LLM done──▶ Speaking
-Speaking ──all sentences done──▶ Listening
-Listening ──timeout──▶ Idle
+Speaking ──SpeakDone count == sentence count──▶ Listening
+Listening ──timeout (last_activity based)──▶ Idle
+Recording ──max_turn_seconds (30s default)──▶ Transcribing
 Any ──EndConversation──▶ Idle
 ```
 
@@ -92,24 +93,11 @@ POST `{endpoint}/v1/chat/completions`:
 {
   "model": "qwen3.5:4b",
   "messages": [
-    {"role": "system", "content": "你是一个简洁的语音助手。用口语化的中文回答，保持简短。"},
+    {"role": "system", "content": "你是一个简洁的语音助手。用口语化的中文回答，保持简短。必须以JSON格式回复，包含reply(回答文本)和confidence(0-1置信度)两个字段。"},
     {"role": "user", "content": "今天天气怎么样"}
   ],
   "stream": false,
-  "response_format": {
-    "type": "json_schema",
-    "json_schema": {
-      "name": "chat_response",
-      "schema": {
-        "type": "object",
-        "properties": {
-          "reply": { "type": "string" },
-          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
-        },
-        "required": ["reply", "confidence"]
-      }
-    }
-  }
+  "response_format": { "type": "json_object" }
 }
 ```
 
@@ -142,13 +130,13 @@ struct Session {
 
 - Created on `StartConversation`
 - Each user/assistant turn appended to history
-- Dropped on timeout (configurable, default 30s) or end phrase match
+- Timeout based on `last_activity` (reset each turn), not `created_at`. Default 30s, configurable.
 - End phrases: configurable list (default: ["结束", "再见", "没事了"])
 
 ## Sentence Splitter
 
 ```rust
-fn split_sentences(text: &str) -> Vec<&str>
+fn split_sentences(text: &str) -> Vec<String>
 ```
 
 - Split on Chinese punctuation (。！？) and English punctuation (. ! ?)
@@ -157,24 +145,25 @@ fn split_sentences(text: &str) -> Vec<&str>
 
 ## VAD Shared Module
 
-Extract from ContinuousActor into `src/vad/mod.rs`:
+Extract energy-based VAD from ContinuousActor into `src/vad/mod.rs`:
 
 ```rust
-pub struct VadDetector { /* silero state */ }
+pub struct VadDetector { /* energy threshold state */ }
 impl VadDetector {
     pub fn new(config: &VadConfig) -> Result<Self>;
     pub fn feed(&mut self, chunk: &[f32]) -> VadEvent; // Speech / Silence / None
 }
 ```
 
-ContinuousActor and ConversationActor each hold independent instances.
+ContinuousActor and ConversationActor each hold independent instances. ConversationActor lazy-inits its own `AsrEngine` instance (AsrEngine is not Sync, cannot share across threads).
 
 ## Configuration
 
 ```toml
 [conversation]
 enabled = true
-timeout_seconds = 30
+timeout_seconds = 30            # inactivity timeout (from last turn)
+max_turn_seconds = 30           # max recording duration per turn
 end_phrases = ["结束", "再见", "没事了"]
 confidence_high = 0.8
 confidence_low = 0.5
@@ -185,7 +174,8 @@ llm_timeout_seconds = 15
 [conversation.llm]
 endpoint = "http://localhost:11434/v1"
 model = "qwen3.5:4b"
-system_prompt = "你是一个简洁的语音助手。用口语化的中文回答，保持简短。"
+system_prompt = "你是一个简洁的语音助手。用口语化的中文回答，保持简短。必须以JSON格式回复，包含reply(回答文本)和confidence(0-1置信度)两个字段。"
+# No api_key_env needed — Ollama requires no auth by default
 ```
 
 Wake word action:
@@ -195,7 +185,7 @@ Wake word action:
 action = "start_conversation"
 ```
 
-ConversationActor and ContinuousActor are mutually exclusive (both do VAD listening).
+ConversationActor and ContinuousActor are mutually exclusive. Enforced at config load: if both `conversation.enabled` and `continuous.enabled` are true, emit error and exit.
 
 ## Mute Strategy
 
@@ -206,7 +196,8 @@ ConversationActor and ContinuousActor are mutually exclusive (both do VAD listen
 | Thinking     | muted   | muted   |
 | Speaking     | muted   | muted   |
 
-All mute states restored on return to Idle.
+On `StartConversation`: emit `MuteInput` to suppress WakewordActor and CoreActor.
+On return to Idle: emit `UnmuteInput` to restore all actors.
 
 ## Error Handling
 
@@ -214,6 +205,7 @@ All mute states restored on return to Idle.
 |----------|----------|
 | Ollama unreachable / timeout | TTS "语音助手暂时不可用", end session |
 | Ollama returns invalid JSON | Retry once, then TTS error message, end session |
+| ASR engine init failure | TTS "语音识别初始化失败", end session |
 | ASR returns empty text | Ignore turn, continue listening |
 | TTS playback failure | Log error, continue next turn |
 | VAD init failure | Actor fails to start, log error, daemon runs without conversation |
@@ -230,7 +222,12 @@ All mute states restored on return to Idle.
 | Unit | Confidence branching logic |
 | Unit | State machine transitions (every state × event combination) |
 | Integration | LLM client → mock HTTP server → JSON parsing |
+| Unit | Mute/unmute signal emission per state transition |
+| Unit | Timeout via injected clock (last_activity anchor) |
 | Integration | ConversationActor full loop (mock audio + mock LLM) |
+| Negative | Malformed JSON from Ollama, confidence outside 0-1, empty reply |
+| Negative | Concurrent StartConversation while session active |
+| Negative | Rapid EndConversation + StartConversation sequence |
 
 ## Messages
 
@@ -245,4 +242,13 @@ Bus routing:
 - `StartConversation` → ConversationActor
 - `EndConversation` → ConversationActor
 - ConversationActor emits: `SpeakRequest`, `MuteInput`, `UnmuteInput`
-- ConversationActor subscribes to: `StartConversation`, `EndConversation`, `SpeakDone`, audio chunks
+- ConversationActor subscribes to: `StartConversation`, `EndConversation`, `SpeakDone`
+- Audio chunks: via dedicated `crossbeam::channel` from AudioSource (NOT the bus)
+
+### SpeakDone Correlation
+
+`SpeakDone` carries no ID. ConversationActor tracks `pending_sentences: usize` (set to sentence count when entering Speaking state) and decrements on each `SpeakDone`. Transitions to Listening when count reaches 0. This is fragile if other actors also trigger TTS concurrently, but acceptable since ConversationActor mutes other actors during a session.
+
+### Ollama Cold Start
+
+First request after model load can take 10-30s (VRAM loading). `llm_timeout_seconds` default is 15s which may be tight. ConversationActor sends a warmup ping (`messages: [{"role":"user","content":"hi"}]`) on actor init when `conversation.enabled = true`. Warmup failure is logged as a warning, not fatal.
