@@ -27,7 +27,7 @@ src/conversation/
 
 ### Modified Components
 
-- `src/llm/client.rs` — add `chat()` method for structured JSON conversation; make `ChatMessage` pub
+- `src/llm/client.rs` — add `chat()` method for structured JSON conversation; make `ChatMessage` pub; make `api_key` optional in `LlmClient::new()` (empty string if env var not set, skip Authorization header when empty); add new `ChatRequest` struct with `stream` and `response_format` fields (existing `ChatRequest` used by `classify()` is unchanged)
 - `src/vad/mod.rs` — extract VAD logic from ContinuousActor into shared module (energy-based, matching current impl)
 - `src/continuous/mod.rs` — refactor to use shared `src/vad/`
 - `src/actor.rs` — add `StartConversation` / `EndConversation` messages
@@ -145,17 +145,23 @@ fn split_sentences(text: &str) -> Vec<String>
 
 ## VAD Shared Module
 
-Extract energy-based VAD from ContinuousActor into `src/vad/mod.rs`:
+Move `src/continuous/vad.rs` (existing `EnergyVad`) to `src/vad/mod.rs` and adapt the API:
 
 ```rust
+/// Replaces EnergyVad. Existing callback-based feed() is changed to return VadEvent.
 pub struct VadDetector { /* energy threshold state */ }
+pub enum VadEvent { Speech, Silence, None }
 impl VadDetector {
     pub fn new(config: &VadConfig) -> Result<Self>;
-    pub fn feed(&mut self, chunk: &[f32]) -> VadEvent; // Speech / Silence / None
+    pub fn feed(&mut self, chunk: &[f32]) -> VadEvent;
 }
 ```
 
-ContinuousActor and ConversationActor each hold independent instances. ConversationActor lazy-inits its own `AsrEngine` instance (AsrEngine is not Sync, cannot share across threads).
+This is a move + API change of existing code, not new code. ContinuousActor is updated to use the new `VadDetector` API. Both actors hold independent instances.
+
+Note: `ContinuousConfig.vad_model` defaults to `"silero"` but implementation is energy-based — this is pre-existing dead config, not addressed in this spec.
+
+ConversationActor lazy-inits its own `AsrEngine` instance (AsrEngine is not Sync, cannot share across threads).
 
 ## Configuration
 
@@ -189,12 +195,14 @@ ConversationActor and ContinuousActor are mutually exclusive. Enforced at config
 
 ## Mute Strategy
 
-| State        | Mic    | Wakeword |
-|--------------|--------|----------|
-| Listening    | unmuted | muted   |
-| Recording    | unmuted | muted   |
-| Thinking     | muted   | muted   |
-| Speaking     | muted   | muted   |
+| State         | Mic     | Wakeword |
+|---------------|---------|----------|
+| Idle          | unmuted | unmuted  |
+| Listening     | unmuted | muted    |
+| Recording     | unmuted | muted    |
+| Transcribing  | muted   | muted    |
+| Thinking      | muted   | muted    |
+| Speaking      | muted   | muted    |
 
 On `StartConversation`: emit `MuteInput` to suppress WakewordActor and CoreActor.
 On return to Idle: emit `UnmuteInput` to restore all actors.
@@ -234,6 +242,8 @@ On return to Idle: emit `UnmuteInput` to restore all actors.
 New variants in `Message` enum:
 
 ```rust
+// Distinct from StartListening (which triggers single-shot recording in CoreActor).
+// StartConversation enters multi-turn conversation mode in ConversationActor.
 StartConversation { wakeword: Option<String> }
 EndConversation
 ```
