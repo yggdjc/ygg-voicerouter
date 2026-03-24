@@ -181,14 +181,14 @@ pub fn compute_rms(samples: &[f32]) -> f32 {
     (sum_sq / samples.len() as f32).sqrt()
 }
 
-/// Record 1 second of ambient noise and derive a silence threshold.
+/// Record 1 second of ambient noise and derive the noise floor.
 ///
 /// Splits the sample into 50ms windows, computes RMS per window, and
 /// takes the **median** as the noise floor estimate.  The median is
 /// robust to transient spikes (keyboard clicks, coughs).
 ///
-/// Returns `median_rms * 3`, clamped to `[floor, 0.05]`.
-/// `floor` is the config `silence_threshold` — the absolute minimum.
+/// Returns the raw median RMS (noise floor). `NoiseTracker` applies
+/// its own multiplier to derive the silence threshold.
 pub fn calibrate_silence(
     pipeline: &mut AudioPipeline,
     sample_rate: u32,
@@ -224,18 +224,13 @@ pub fn calibrate_silence(
     window_rms.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let median = window_rms[window_rms.len() / 2];
 
-    // Threshold = 2× noise floor, clamped to sane bounds.
-    let ceiling = 0.05_f32;
-    let threshold = (median * 2.0).clamp(floor, ceiling);
-
     log::info!(
-        "noise floor (median RMS): {median:.4}, threshold: {threshold:.4} \
-         (floor: {floor}, ceiling: {ceiling})"
+        "noise floor (median RMS): {median:.4} (config floor: {floor})"
     );
-    threshold
+    median
 }
 
-/// Calibrate silence threshold from an audio broadcast channel.
+/// Calibrate noise floor from an audio broadcast channel.
 pub fn calibrate_silence_from_channel(
     rx: &crossbeam::channel::Receiver<crate::audio_source::AudioChunk>,
     sample_rate: u32,
@@ -276,12 +271,12 @@ pub fn calibrate_silence_from_channel(
 
     window_rms.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let median = window_rms[window_rms.len() / 2];
-    let ceiling = 0.05_f32;
-    let threshold = (median * 2.0).clamp(floor, ceiling);
 
+    // Return the raw noise floor (median RMS). NoiseTracker applies its own
+    // 2× multiplier to derive the silence threshold — returning a threshold
+    // here would double-count the multiplier.
     log::info!(
-        "noise floor (median RMS): {median:.4}, threshold: {threshold:.4} \
-         (floor: {floor}, ceiling: {ceiling})"
+        "noise floor (median RMS): {median:.4} (config floor: {floor})"
     );
-    threshold
+    median
 }
