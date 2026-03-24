@@ -339,6 +339,15 @@ fn finalize_recording(
         .transcribe(&samples, config.audio.sample_rate)
     {
         Ok(t) if !t.is_empty() => t,
+        Ok(_) if config.asr.provider != "cpu" => {
+            // GPU provider can silently fail (e.g. CUDA Paraformer tensor
+            // shape bug on short audio). Retry once with a CPU engine.
+            log::warn!("[core] GPU transcription returned empty, retrying with CPU");
+            match cpu_fallback_transcribe(&samples, config) {
+                Some(t) => t,
+                None => return,
+            }
+        }
         Ok(_) => {
             log::info!("[core] transcribed: (empty)");
             return;
@@ -428,6 +437,35 @@ fn add_punctuation(
             punc.add_punctuation(text).unwrap_or_else(|| text.to_owned())
         }
         None => text.to_owned(),
+    }
+}
+
+/// One-shot CPU fallback when GPU transcription returns empty.
+fn cpu_fallback_transcribe(samples: &[f32], config: &Config) -> Option<String> {
+    let cpu_config = crate::config::AsrConfig {
+        provider: "cpu".to_owned(),
+        ..config.asr.clone()
+    };
+    let mut engine = match AsrEngine::new(&cpu_config) {
+        Ok(e) => e,
+        Err(e) => {
+            log::error!("[core] CPU fallback ASR init failed: {e:#}");
+            return None;
+        }
+    };
+    match engine.transcribe(samples, config.audio.sample_rate) {
+        Ok(t) if !t.is_empty() => {
+            log::info!("[core] CPU fallback transcribed: {t:?}");
+            Some(t)
+        }
+        Ok(_) => {
+            log::info!("[core] CPU fallback also returned empty");
+            None
+        }
+        Err(e) => {
+            log::error!("[core] CPU fallback transcription failed: {e:#}");
+            None
+        }
     }
 }
 
