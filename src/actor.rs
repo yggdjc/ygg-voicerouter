@@ -20,6 +20,11 @@ pub enum Message {
     StopListening,
     /// Cancel active recording without transcribing (discard audio).
     CancelRecording,
+    /// Wake word triggers multi-turn conversation mode in ConversationActor.
+    /// Distinct from StartListening which triggers single-shot recording in CoreActor.
+    StartConversation { wakeword: Option<String> },
+    /// End the active conversation session.
+    EndConversation,
     Shutdown,
     /// Request user confirmation for high-risk action (continuous mode).
     ConfirmAction { text: String, stage: String },
@@ -43,6 +48,8 @@ impl Message {
             Self::StartListening { .. } => "StartListening",
             Self::StopListening => "StopListening",
             Self::CancelRecording => "CancelRecording",
+            Self::StartConversation { .. } => "StartConversation",
+            Self::EndConversation => "EndConversation",
             Self::Shutdown => "Shutdown",
             Self::ConfirmAction { .. } => "ConfirmAction",
             Self::ActionConfirmed => "ActionConfirmed",
@@ -154,6 +161,25 @@ mod tests {
     fn bus_no_subscriber_is_silent() {
         let bus = Bus::new();
         bus.publish(Message::StartListening { wakeword: None });
+    }
+
+    #[test]
+    fn conversation_message_topics() {
+        assert_eq!(
+            Message::StartConversation { wakeword: Some("hey".into()) }.topic(),
+            "StartConversation"
+        );
+        assert_eq!(Message::EndConversation.topic(), "EndConversation");
+    }
+
+    #[test]
+    fn bus_routes_start_conversation() {
+        let (tx, rx) = crossbeam::channel::bounded(8);
+        let mut bus = Bus::new();
+        bus.subscribe("StartConversation", tx);
+        bus.publish(Message::StartConversation { wakeword: None });
+        let received = rx.try_recv().unwrap();
+        assert!(matches!(received, Message::StartConversation { .. }));
     }
 
     #[test]
