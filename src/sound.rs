@@ -32,9 +32,33 @@ pub fn beep_error() -> Result<()> {
     play_beep(330.0, 250)
 }
 
+/// Play a double high-pitched confirmation request beep (1000 Hz, 2 × 100 ms with 100 ms gap).
+///
+/// Audibly distinct from `beep_start` (880 Hz, single) and `beep_done` (660 Hz, single).
+pub fn beep_confirm() -> Result<()> {
+    play_beep_double(1000.0, 100, 100)
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Spawn a background thread that plays two beeps with a silent gap between them.
+fn play_beep_double(freq_hz: f32, duration_ms: u32, gap_ms: u64) -> Result<()> {
+    std::thread::Builder::new()
+        .name("voicerouter-beep-confirm".to_owned())
+        .spawn(move || {
+            if let Err(e) = play_beep_blocking(freq_hz, duration_ms) {
+                log::warn!("sound: confirm beep 1 failed: {e}");
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(gap_ms));
+            if let Err(e) = play_beep_blocking(freq_hz, duration_ms) {
+                log::warn!("sound: confirm beep 2 failed: {e}");
+            }
+        })?;
+    Ok(())
+}
 
 /// Spawn a background thread that generates a WAV beep and pipes it to
 /// `paplay`.

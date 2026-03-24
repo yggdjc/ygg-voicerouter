@@ -117,6 +117,8 @@ impl Actor for ContinuousActor {
 
         let sample_rate = self.config.audio.sample_rate;
         let mut muted = false;
+        // Text waiting for ActionConfirmed before being sent to the pipeline.
+        let mut pending_confirm: Option<(String, String)> = None; // (text, stage)
 
         log::info!("[continuous] ready");
 
@@ -136,6 +138,31 @@ impl Actor for ContinuousActor {
                         muted = false;
                         log::debug!("[continuous] unmuted");
                     }
+                    Message::ActionConfirmed => {
+                        if let Some((text, stage)) = pending_confirm.take() {
+                            log::info!(
+                                "[continuous] high-risk action confirmed, \
+                                 dispatching stage='{stage}'"
+                            );
+                            outbox
+                                .send(Message::PipelineInput {
+                                    text,
+                                    metadata: crate::actor::Metadata {
+                                        source: "continuous".to_string(),
+                                        timestamp: std::time::Instant::now(),
+                                    },
+                                })
+                                .ok();
+                        }
+                    }
+                    Message::ActionRejected => {
+                        if let Some((_, stage)) = pending_confirm.take() {
+                            log::info!(
+                                "[continuous] high-risk action rejected/timeout for \
+                                 stage='{stage}', discarding"
+                            );
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -153,6 +180,15 @@ impl Actor for ContinuousActor {
                              {} samples",
                             segment.len()
                         );
+
+                        // Drop new speech while a high-risk confirmation is pending.
+                        if pending_confirm.is_some() {
+                            log::debug!(
+                                "[continuous] ignoring segment, \
+                                 confirmation pending"
+                            );
+                            return;
+                        }
 
                         // Speaker verification gate.
                         if let Some(ref _verifier) = speaker_verifier {
@@ -211,13 +247,13 @@ impl Actor for ContinuousActor {
                             "[continuous] intent: {intent:?}"
                         );
 
-                        match intent {
+                        let awaiting = match intent {
                             Intent::Command => {
                                 dispatch_command(
                                     &transcript,
                                     &stage_infos,
                                     &outbox,
-                                );
+                                )
                             }
                             Intent::Uncertain => {
                                 if let Some(ref client) = llm_client {
@@ -227,12 +263,13 @@ impl Actor for ContinuousActor {
                                         &available_actions,
                                         &stage_infos,
                                         &outbox,
-                                    );
+                                    )
                                 } else {
                                     log::debug!(
                                         "[continuous] discarding uncertain \
                                          (no LLM): {transcript:?}"
                                     );
+                                    None
                                 }
                             }
                             Intent::Ambient => {
@@ -240,7 +277,12 @@ impl Actor for ContinuousActor {
                                     "[continuous] ambient, discarding: \
                                      {transcript:?}"
                                 );
+                                None
                             }
+                        };
+
+                        if let Some(pair) = awaiting {
+                            pending_confirm = Some(pair);
                         }
                     });
                 }
@@ -309,11 +351,14 @@ fn load_speaker_verifier(threshold: f32) -> Option<SpeakerVerifier> {
 }
 
 /// Dispatch a Command intent to the pipeline.
+///
+/// Returns `Some((text, stage))` if a high-risk action was sent and the caller
+/// should record the pending confirmation.
 fn dispatch_command(
     transcript: &str,
     stage_infos: &[StageInfo],
     outbox: &Sender<Message>,
-) {
+) -> Option<(String, String)> {
     // Find the first matching stage by trigger prefix.
     let matched = stage_infos
         .iter()
@@ -326,26 +371,29 @@ fn dispatch_command(
                 info.name,
                 info.risk
             );
-            send_for_risk(transcript, &info.name, info.risk, outbox);
+            send_for_risk(transcript, &info.name, info.risk, outbox)
         }
         None => {
             // Imperative verb detected but no trigger matched — default inject (low risk).
             log::info!(
                 "[continuous] command with no trigger match, default inject"
             );
-            send_for_risk(transcript, "default", RiskLevel::Low, outbox);
+            send_for_risk(transcript, "default", RiskLevel::Low, outbox)
         }
     }
 }
 
 /// Handle an Uncertain intent by calling the LLM.
+///
+/// Returns `Some((text, stage))` if a high-risk action was sent and the caller
+/// should record the pending confirmation.
 fn handle_uncertain(
     transcript: &str,
     llm: &LlmClient,
     available_actions: &[String],
     stage_infos: &[StageInfo],
     outbox: &Sender<Message>,
-) {
+) -> Option<(String, String)> {
     match llm.classify(transcript, available_actions) {
         Ok(resp) => {
             log::info!(
@@ -369,33 +417,35 @@ fn handle_uncertain(
                     &resp.text
                 };
 
-                match matched {
-                    Some(info) => {
-                        send_for_risk(text, &info.name, info.risk, outbox);
-                    }
-                    None => {
-                        send_for_risk(text, "default", RiskLevel::Low, outbox);
-                    }
-                }
+                return match matched {
+                    Some(info) => send_for_risk(text, &info.name, info.risk, outbox),
+                    None => send_for_risk(text, "default", RiskLevel::Low, outbox),
+                };
             }
             // intent == "ambient" → discard
+            None
         }
         Err(e) => {
             log::warn!(
                 "[continuous] LLM classification failed: {e:#}; \
                  discarding uncertain"
             );
+            None
         }
     }
 }
 
 /// Send PipelineInput (low risk) or ConfirmAction (high risk).
+///
+/// Returns `Some((text, stage))` when a high-risk action is sent so the
+/// caller can record the pending confirmation and dispatch PipelineInput
+/// upon ActionConfirmed.
 fn send_for_risk(
     text: &str,
     stage_name: &str,
     risk: RiskLevel,
     outbox: &Sender<Message>,
-) {
+) -> Option<(String, String)> {
     match risk {
         RiskLevel::Low => {
             outbox
@@ -407,6 +457,7 @@ fn send_for_risk(
                     },
                 })
                 .ok();
+            None
         }
         RiskLevel::High => {
             log::info!(
@@ -419,6 +470,7 @@ fn send_for_risk(
                     stage: stage_name.to_string(),
                 })
                 .ok();
+            Some((text.to_string(), stage_name.to_string()))
         }
     }
 }
@@ -454,15 +506,18 @@ mod tests {
     #[test]
     fn send_for_risk_low_sends_pipeline_input() {
         let (tx, rx) = crossbeam::channel::bounded(8);
-        send_for_risk("test", "default", RiskLevel::Low, &tx);
+        let pending = send_for_risk("test", "default", RiskLevel::Low, &tx);
+        assert!(pending.is_none(), "low risk should not produce pending confirm");
         let msg = rx.try_recv().unwrap();
         assert!(matches!(msg, Message::PipelineInput { text, .. } if text == "test"));
     }
 
     #[test]
-    fn send_for_risk_high_sends_confirm_action() {
+    fn send_for_risk_high_sends_confirm_action_and_returns_pending() {
         let (tx, rx) = crossbeam::channel::bounded(8);
-        send_for_risk("rm -rf /", "shell_stage", RiskLevel::High, &tx);
+        let pending = send_for_risk("rm -rf /", "shell_stage", RiskLevel::High, &tx);
+        // Must return pending info for the caller to track.
+        assert_eq!(pending, Some(("rm -rf /".to_string(), "shell_stage".to_string())));
         let msg = rx.try_recv().unwrap();
         assert!(
             matches!(msg, Message::ConfirmAction { text, stage } if text == "rm -rf /" && stage == "shell_stage")
@@ -477,20 +532,22 @@ mod tests {
             risk: RiskLevel::High,
         }];
         let (tx, rx) = crossbeam::channel::bounded(8);
-        dispatch_command("打开浏览器", &stages, &tx);
+        let pending = dispatch_command("打开浏览器", &stages, &tx);
+        assert!(pending.is_none());
         let msg = rx.try_recv().unwrap();
         assert!(matches!(msg, Message::PipelineInput { .. }));
     }
 
     #[test]
-    fn dispatch_command_matched_trigger() {
+    fn dispatch_command_matched_trigger_returns_pending() {
         let stages = vec![StageInfo {
             trigger: "搜索".to_string(),
             name: "search".to_string(),
             risk: RiskLevel::High,
         }];
         let (tx, rx) = crossbeam::channel::bounded(8);
-        dispatch_command("搜索天气", &stages, &tx);
+        let pending = dispatch_command("搜索天气", &stages, &tx);
+        assert_eq!(pending, Some(("搜索天气".to_string(), "search".to_string())));
         let msg = rx.try_recv().unwrap();
         assert!(matches!(msg, Message::ConfirmAction { stage, .. } if stage == "search"));
     }

@@ -223,10 +223,18 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
         bus.subscribe("Shutdown", tx.clone());
         bus.subscribe("MuteInput", tx.clone());
         bus.subscribe("UnmuteInput", tx.clone());
+        // Confirmation responses from HotkeyActor back to ContinuousActor.
+        bus.subscribe("ActionConfirmed", tx.clone());
+        bus.subscribe("ActionRejected", tx.clone());
         Some((tx, rx))
     } else {
         None
     };
+
+    // HotkeyActor receives ConfirmAction from ContinuousActor (via bus).
+    if config.continuous.enabled {
+        bus.subscribe("ConfirmAction", hotkey_tx.clone());
+    }
 
     // Spawn bus router thread.
     let bus_handle = std::thread::Builder::new()
