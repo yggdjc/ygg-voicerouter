@@ -16,3 +16,4 @@ pub mod tts;
 pub mod wakeword;
 pub mod continuous;
 pub mod llm;
+pub mod conversation;
