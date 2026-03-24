@@ -68,6 +68,7 @@ impl Actor for ConversationActor {
 
         warmup_ping(&llm, self.config.conversation.llm_timeout_seconds);
 
+        let feedback = self.config.sound.feedback;
         let mut state = State::Idle;
         let mut session: Option<Session> = None;
         let mut vad: Option<VadDetector> = None;
@@ -97,7 +98,7 @@ impl Actor for ConversationActor {
                 State::Listening => {
                     if check_timeout(&session, &self.config) {
                         log::info!("[conversation] session timed out");
-                        end_session(&outbox);
+                        end_session(&outbox, feedback);
                         reset_state(
                             &mut state,
                             &mut session,
@@ -192,7 +193,10 @@ fn speak_reply(text: &str, outbox: &Sender<Message>) {
         .ok();
 }
 
-fn end_session(outbox: &Sender<Message>) {
+fn end_session(outbox: &Sender<Message>, feedback: bool) {
+    if feedback {
+        crate::sound::beep_done().ok();
+    }
     outbox.send(Message::UnmuteInput).ok();
 }
 
@@ -296,7 +300,7 @@ fn drain_control(
                 if *state != State::Idle {
                     log::info!("[conversation] ending session by request");
                     speak_text("好的，再见", outbox);
-                    end_session(outbox);
+                    end_session(outbox, config.sound.feedback);
                     *state = State::Idle;
                     *session = None;
                     *vad = None;
@@ -338,6 +342,9 @@ fn start_session(
         threshold: config.audio.silence_threshold as f32,
     }));
     outbox.send(Message::MuteInput).ok();
+    if config.sound.feedback {
+        crate::sound::beep_start().ok();
+    }
     *state = State::Listening;
 }
 
@@ -440,7 +447,7 @@ fn handle_transcribing(
             Err(e) => {
                 log::error!("[conversation] ASR init failed: {e:#}");
                 speak_text("语音识别初始化失败", outbox);
-                end_session(outbox);
+                end_session(outbox, config.sound.feedback);
                 return State::Idle;
             }
         }
@@ -466,12 +473,13 @@ fn handle_transcribing(
     log::info!("[conversation] transcript: {transcript:?}");
 
     return finalize_transcript(
-        &transcript, session, outbox, vad,
+        &transcript, config, session, outbox, vad,
     );
 }
 
 fn finalize_transcript(
     transcript: &str,
+    config: &Config,
     session: &mut Option<Session>,
     outbox: &Sender<Message>,
     vad: &mut Option<VadDetector>,
@@ -483,7 +491,7 @@ fn finalize_transcript(
     if sess.is_end_phrase(transcript) {
         log::info!("[conversation] end phrase detected");
         speak_text("好的，再见", outbox);
-        end_session(outbox);
+        end_session(outbox, config.sound.feedback);
         *session = None;
         *vad = None;
         return State::Idle;
@@ -520,7 +528,7 @@ fn handle_thinking(
         Err(e) => {
             log::error!("[conversation] LLM failed after retry: {e:#}");
             speak_text("抱歉，我暂时无法回答", outbox);
-            end_session(outbox);
+            end_session(outbox, config.sound.feedback);
             *session = None;
             *vad = None;
             return State::Idle;
