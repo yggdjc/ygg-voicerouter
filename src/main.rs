@@ -138,7 +138,10 @@ fn run_test_inject(text: &str, config: &Config) -> Result<()> {
 fn run_daemon(config: Config, preload: bool) -> Result<()> {
     log::info!("voicerouter starting up (actor mode)");
 
+    config.validate()?;
+
     use voicerouter::actor::{Actor, Bus, Message};
+    use voicerouter::conversation::ConversationActor;
     use voicerouter::continuous::ContinuousActor;
     use voicerouter::core_actor::CoreActor;
     use voicerouter::hotkey::HotkeyActor;
@@ -237,6 +240,18 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
         bus.subscribe("ConfirmAction", hotkey_tx.clone());
     }
 
+    // Conversation actor channel + bus subscriptions (only when enabled).
+    let conversation_channels = if config.conversation.enabled {
+        let (tx, rx) = crossbeam::channel::bounded::<Message>(32);
+        bus.subscribe("StartConversation", tx.clone());
+        bus.subscribe("EndConversation", tx.clone());
+        bus.subscribe("SpeakDone", tx.clone());
+        bus.subscribe("Shutdown", tx.clone());
+        Some((tx, rx))
+    } else {
+        None
+    };
+
     // Spawn bus router thread.
     let bus_handle = std::thread::Builder::new()
         .name("bus".into())
@@ -261,6 +276,14 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     let mut audio_subscribers = vec![core_audio_tx, wakeword_audio_tx];
 
     let continuous_audio_rx = if config.continuous.enabled {
+        let (tx, rx) = crossbeam::channel::bounded::<voicerouter::audio_source::AudioChunk>(256);
+        audio_subscribers.push(tx);
+        Some(rx)
+    } else {
+        None
+    };
+
+    let conversation_audio_rx = if config.conversation.enabled {
         let (tx, rx) = crossbeam::channel::bounded::<voicerouter::audio_source::AudioChunk>(256);
         audio_subscribers.push(tx);
         Some(rx)
@@ -330,6 +353,23 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
         None
     };
 
+    let conversation_handle = if let (Some((_conv_tx, conv_rx)), Some(conv_audio_rx)) =
+        (conversation_channels, conversation_audio_rx)
+    {
+        let conversation_actor = ConversationActor::new(config.clone(), conv_audio_rx);
+        let bus_tx_conversation = bus_tx.clone();
+        Some(
+            std::thread::Builder::new()
+                .name("conversation".into())
+                .spawn(move || conversation_actor.run(conv_rx, bus_tx_conversation))?,
+        )
+    } else {
+        if !config.conversation.enabled {
+            log::info!("[conversation] disabled");
+        }
+        None
+    };
+
     let ipc_handle = if let Some((_ipc_tx, ipc_rx)) = ipc_channels {
         let ipc_actor = IpcActor::new(config.ipc.clone());
         let bus_tx_ipc = bus_tx.clone();
@@ -356,6 +396,9 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     let mut handles: Vec<std::thread::JoinHandle<()>> =
         vec![hotkey_handle, core_handle, pipeline_handle, tts_handle, wakeword_handle];
     if let Some(h) = continuous_handle {
+        handles.push(h);
+    }
+    if let Some(h) = conversation_handle {
         handles.push(h);
     }
     if let Some(h) = ipc_handle {
