@@ -95,12 +95,12 @@ fn ensure_default_config() -> Result<()> {
 
 /// Download model files. If `model` is None, downloads the configured ASR
 /// model + ct-punc. If "all", downloads all supported models.
+///
+/// Options: paraformer-zh, funasr-nano, whisper-tiny-en, whisper-base-en,
+///          ct-punc, silero-vad, 3dspeaker, all
 pub fn download(config: &Config, model: Option<&str>) -> Result<()> {
     if !is_command_available("curl") {
         bail!("curl is required for downloading models. Install it first.");
-    }
-    if !is_command_available("tar") {
-        bail!("tar is required for extracting models. Install it first.");
     }
 
     let model_dir = expand_tilde(&config.asr.model_dir)?;
@@ -113,10 +113,21 @@ pub fn download(config: &Config, model: Option<&str>) -> Result<()> {
             "whisper-tiny-en",
             "whisper-base-en",
             "ct-punc",
+            "silero-vad",
+            "3dspeaker",
         ],
         Some(name) => vec![name],
         None => vec![&config.asr.model, "ct-punc"],
     };
+
+    // tar is only needed when downloading archive-based models.
+    let needs_tar = models_to_download
+        .iter()
+        .any(|n| !matches!(*n, "silero-vad" | "3dspeaker"));
+
+    if needs_tar && !is_command_available("tar") {
+        bail!("tar is required for extracting archive models. Install it first.");
+    }
 
     for name in &models_to_download {
         if model_files_exist(name, &model_dir).unwrap_or(false) {
@@ -127,25 +138,46 @@ pub fn download(config: &Config, model: Option<&str>) -> Result<()> {
         let info = model_info(name, &model_dir)
             .with_context(|| format!("unknown model '{name}'"))?;
 
-        // Find the archive URL (first file with a non-empty URL)
-        let archive_url = info
-            .files
-            .iter()
-            .find(|f| !f.url.is_empty())
-            .map(|f| &f.url);
-
-        let Some(url) = archive_url else {
+        // Find the first file with a non-empty URL.
+        let Some(first_file) = info.files.iter().find(|f| !f.url.is_empty()) else {
             println!("[skip] {name} — no download URL");
             continue;
         };
 
         println!("[download] {name}");
-        download_and_extract(url, name, &model_dir)?;
+
+        // Single-file ONNX models download directly; archive models extract.
+        if first_file.url.ends_with(".onnx") {
+            let dest_dir = model_dir.join(name);
+            std::fs::create_dir_all(&dest_dir)
+                .with_context(|| format!("creating directory {}", dest_dir.display()))?;
+            download_file(&first_file.url, &first_file.local_path)?;
+        } else {
+            download_and_extract(&first_file.url, name, &model_dir)?;
+        }
+
         println!("[ok] {name} installed");
     }
 
     println!();
     println!("Done. Run `voicerouter setup` to verify.");
+    Ok(())
+}
+
+/// Download a single file to `dest` using curl.
+fn download_file(url: &str, dest: &std::path::Path) -> Result<()> {
+    let file_name = url.rsplit('/').next().unwrap_or("model.onnx");
+    println!("  Downloading {file_name}...");
+    let status = Command::new("curl")
+        .args(["-L", "--progress-bar", "-o"])
+        .arg(dest)
+        .arg(url)
+        .status()
+        .context("failed to run curl")?;
+
+    if !status.success() {
+        bail!("curl failed with status {status}");
+    }
     Ok(())
 }
 

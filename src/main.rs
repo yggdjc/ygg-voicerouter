@@ -49,7 +49,8 @@ enum Commands {
     /// Download model files for the configured (or specified) model.
     Download {
         /// Model to download. Defaults to the configured ASR model + punctuation.
-        /// Options: paraformer-zh, funasr-nano, whisper-tiny-en, whisper-base-en, ct-punc, all
+        /// Options: paraformer-zh, funasr-nano, whisper-tiny-en, whisper-base-en,
+        ///          ct-punc, silero-vad, 3dspeaker, all
         model: Option<String>,
     },
     /// Control the background systemd user service.
@@ -57,6 +58,8 @@ enum Commands {
         /// Action: install | uninstall | start | stop | status
         action: String,
     },
+    /// Record voice samples and save a speaker enrollment profile.
+    Enroll,
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +90,7 @@ fn main() -> Result<()> {
         Some(Commands::Setup) => setup::run(&config),
         Some(Commands::Download { model }) => setup::download(&config, model.as_deref()),
         Some(Commands::Service { action }) => service::run(&action),
+        Some(Commands::Enroll) => run_enroll(&config),
     }
 }
 
@@ -376,6 +380,87 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
 
     log::info!("voicerouter stopped");
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// enroll subcommand
+// ---------------------------------------------------------------------------
+
+/// Record 5 voice samples, compute RMS-based embeddings, average them, and
+/// save the result to `~/.config/voicerouter/speaker.bin`.
+fn run_enroll(config: &Config) -> Result<()> {
+    println!("Speaker enrollment — speak normally when prompted.");
+    println!("5 samples, 3 seconds each.\n");
+
+    let sample_rate = config.audio.sample_rate;
+    let mut embeddings: Vec<Vec<f32>> = Vec::new();
+
+    for i in 1..=5u32 {
+        println!("Sample {i}/5: Press Enter to start recording...");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+
+        println!("  Recording for 3 seconds...");
+        let samples = record_audio_blocking(config, 3)?;
+
+        let embedding = compute_rms_embedding(&samples, sample_rate);
+        println!("  Done. (embedding dim: {})", embedding.len());
+        embeddings.push(embedding);
+    }
+
+    if embeddings.is_empty() {
+        anyhow::bail!("no embeddings recorded");
+    }
+
+    let dim = embeddings[0].len();
+    let mut mean = vec![0.0f32; dim];
+    for emb in &embeddings {
+        for (i, v) in emb.iter().enumerate() {
+            mean[i] += v;
+        }
+    }
+    for v in &mut mean {
+        *v /= embeddings.len() as f32;
+    }
+
+    let config_dir = dirs::config_dir()
+        .ok_or_else(|| anyhow::anyhow!("cannot determine config directory"))?
+        .join("voicerouter");
+    std::fs::create_dir_all(&config_dir)?;
+    let path = config_dir.join("speaker.bin");
+
+    let bytes: Vec<u8> = mean.iter().flat_map(|f| f.to_le_bytes()).collect();
+    std::fs::write(&path, &bytes)?;
+
+    println!("\nEnrollment saved to {}", path.display());
+    println!("Speaker verification is now active in continuous listening mode.");
+    Ok(())
+}
+
+/// Record audio for `duration_secs` seconds using [`AudioPipeline`].
+fn record_audio_blocking(config: &Config, duration_secs: u64) -> Result<Vec<f32>> {
+    let mut pipeline =
+        AudioPipeline::new(&config.audio).context("failed to open audio device")?;
+    pipeline.start_recording().context("start recording")?;
+    std::thread::sleep(Duration::from_secs(duration_secs));
+    Ok(pipeline.stop_recording().unwrap_or_default())
+}
+
+/// Compute a simple RMS-based embedding from audio samples.
+///
+/// Divides the audio into overlapping 100ms windows (50% hop) and returns
+/// the RMS value of each window as the embedding vector.
+fn compute_rms_embedding(samples: &[f32], sample_rate: u32) -> Vec<f32> {
+    let window_size = (sample_rate as usize) / 10; // 100ms
+    let hop = window_size / 2;                     // 50% overlap
+    let mut embedding = Vec::new();
+    let mut offset = 0;
+    while offset + window_size <= samples.len() {
+        let rms = audio::compute_rms(&samples[offset..offset + window_size]);
+        embedding.push(rms);
+        offset += hop;
+    }
+    embedding
 }
 
 fn parse_condition(s: &str) -> voicerouter::pipeline::stage::Condition {
