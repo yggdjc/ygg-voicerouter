@@ -416,6 +416,7 @@ fn add_punctuation(
         let cfg = sherpa_onnx::OfflinePunctuationConfig {
             model: sherpa_onnx::OfflinePunctuationModelConfig {
                 ct_transformer: Some(model_file.to_string_lossy().into_owned()),
+                provider: Some(config.asr.provider.clone()),
                 ..Default::default()
             },
         };

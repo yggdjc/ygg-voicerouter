@@ -87,6 +87,7 @@ impl SherpaTts {
                     ..Default::default()
                 },
                 num_threads: 2,
+                provider: Some(config.provider.clone()),
                 ..Default::default()
             },
             rule_fsts,

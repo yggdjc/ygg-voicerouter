@@ -292,6 +292,8 @@ pub struct TtsConfig {
     pub speed: f64,
     pub sid: i32,
     pub mute_mic_during_playback: bool,
+    /// ONNX Runtime execution provider: `cpu` or `cuda`.
+    pub provider: String,
 }
 
 impl Default for TtsConfig {
@@ -304,6 +306,7 @@ impl Default for TtsConfig {
             speed: 1.0,
             sid: 3,
             mute_mic_during_playback: true,
+            provider: "cpu".to_owned(),
         }
     }
 }
