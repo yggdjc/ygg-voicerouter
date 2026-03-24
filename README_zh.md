@@ -169,6 +169,31 @@ stride_seconds = 1.0
 action = "start_recording"   # start_recording | pipeline_passthrough
 ```
 
+### 持续监听
+
+始终开启的监听模式，集成 VAD 语音活动检测、说话人验证和意图分类。自动检测语音片段，验证说话人身份，完成转录后将语音分类为命令或环境音。
+
+```toml
+[continuous]
+enabled = false              # 默认关闭，需显式启用
+speaker_verify = true        # 要求通过说话人声纹验证
+speaker_threshold = 0.6      # 余弦相似度阈值
+speaker_model = "3dspeaker"
+vad_model = "silero"
+
+[continuous.llm]
+endpoint = "http://localhost:8080/v1"
+model = "claude-haiku"
+api_key_env = "VOICEROUTER_LLM_KEY"
+```
+
+注册声纹以启用说话人验证：
+```bash
+voicerouter enroll
+```
+
+高风险操作（shell、http、pipe）需要热键确认后执行。低风险操作（inject、speak、transform）静默执行。
+
 ### 注入方式
 
 ```toml
