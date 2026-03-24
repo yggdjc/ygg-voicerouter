@@ -82,6 +82,7 @@ impl Actor for ConversationActor {
         loop {
             let result = drain_control(
                 &inbox,
+                &self.audio_rx,
                 &mut state,
                 &mut session,
                 &mut vad,
@@ -283,6 +284,7 @@ enum ControlResult {
 
 fn drain_control(
     inbox: &Receiver<Message>,
+    audio_rx: &Receiver<AudioChunk>,
     state: &mut State,
     session: &mut Option<Session>,
     vad: &mut Option<VadDetector>,
@@ -319,7 +321,27 @@ fn drain_control(
                 if *state == State::Speaking {
                     *pending_sentences = pending_sentences.saturating_sub(1);
                     if *pending_sentences == 0 {
-                        log::debug!("[conversation] all sentences spoken");
+                        log::debug!("[conversation] all sentences spoken, cooldown before listening");
+                        // Drain buffered audio accumulated during TTS playback.
+                        // TTS sends MuteInput/UnmuteInput for CoreActor, but our audio
+                        // channel still buffers chunks during Speaking state. Drain them
+                        // plus a brief wait for speaker→mic echo decay (~300ms typical
+                        // indoor reverb tail for near-field speakers).
+                        let cooldown_end = Instant::now() + Duration::from_millis(300);
+                        while Instant::now() < cooldown_end {
+                            if let Ok(Message::Shutdown) = inbox.try_recv() {
+                                return ControlResult::Shutdown;
+                            }
+                            while audio_rx.try_recv().is_ok() {}
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        // Reset VAD state so it doesn't carry over TTS audio.
+                        if let Some(ref mut v) = vad {
+                            *v = crate::vad::VadDetector::new(&crate::vad::VadConfig {
+                                sample_rate: config.audio.sample_rate,
+                                threshold: config.audio.silence_threshold as f32,
+                            });
+                        }
                         *state = State::Listening;
                         if let Some(ref mut s) = session {
                             s.last_activity = Instant::now();
