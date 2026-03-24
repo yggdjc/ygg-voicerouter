@@ -373,8 +373,8 @@ impl Default for ConversationLlmConfig {
         Self {
             endpoint: "http://localhost:11434/v1".to_owned(),
             model: "qwen3.5:4b".to_owned(),
-            system_prompt: "你是一个简洁的语音助手。用口语化的中文回答，保持简短。\
-                必须以JSON格式回复，包含reply(回答文本)和confidence(0-1置信度)两个字段。"
+            system_prompt: "/no_think 你是一个简洁的语音助手。用口语化的中文回答，保持简短。\
+                以JSON格式回复，包含reply(回答文本)和confidence(0-1置信度)两个字段。"
                 .to_owned(),
         }
     }
