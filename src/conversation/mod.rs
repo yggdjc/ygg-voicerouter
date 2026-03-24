@@ -107,21 +107,29 @@ impl Actor for ConversationActor {
                         );
                         continue;
                     }
-                    state = process_audio_listening(
+                    let new_state = process_audio_listening(
                         &self.audio_rx,
                         vad.as_mut(),
                         &mut audio_buffer,
                         &mut recording_start,
                     );
+                    if new_state == State::Recording && feedback {
+                        crate::sound::beep_start().ok();
+                    }
+                    state = new_state;
                 }
                 State::Recording => {
-                    state = process_audio_recording(
+                    let new_state = process_audio_recording(
                         &self.audio_rx,
                         vad.as_mut(),
                         &mut audio_buffer,
                         recording_start,
                         self.config.conversation.max_turn_seconds,
                     );
+                    if new_state == State::Transcribing && feedback {
+                        crate::sound::beep_done().ok();
+                    }
+                    state = new_state;
                 }
                 State::Transcribing => {
                     state = handle_transcribing(
