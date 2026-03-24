@@ -189,11 +189,9 @@ fn emit_action(
                     .ok();
             }
         }
-        // Full conversation handling is implemented in Task 7 (ConversationActor).
-        // For now, fall back to start-recording so the daemon compiles and runs.
         crate::config::WakewordAction::StartConversation => {
             outbox
-                .send(Message::StartListening {
+                .send(Message::StartConversation {
                     wakeword: Some(phrase.to_string()),
                 })
                 .ok();
@@ -210,5 +208,15 @@ mod tests {
         let (_tx, rx) = crossbeam::channel::bounded(1);
         let actor = WakewordActor::new(Config::default(), rx);
         assert_eq!(Actor::name(&actor), "wakeword");
+    }
+
+    #[test]
+    fn emit_action_start_conversation() {
+        let (tx, rx) = crossbeam::channel::bounded(8);
+        let mut config = Config::default();
+        config.wakeword.action = crate::config::WakewordAction::StartConversation;
+        emit_action(&config, &tx, "小助手", "你好");
+        let msg = rx.try_recv().unwrap();
+        assert!(matches!(msg, Message::StartConversation { wakeword } if wakeword == Some("小助手".into())));
     }
 }
