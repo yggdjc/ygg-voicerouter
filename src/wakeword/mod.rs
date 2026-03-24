@@ -58,10 +58,12 @@ impl Actor for WakewordActor {
         } else {
             self.config.wakeword.model.clone()
         };
+        // Force CPU for wakeword ASR: short sliding windows (2s) trigger
+        // a tensor shape bug in the CUDA Paraformer provider.
         let asr_config = crate::config::AsrConfig {
             model: asr_model,
             model_dir: self.config.asr.model_dir.clone(),
-            provider: self.config.asr.provider.clone(),
+            provider: "cpu".to_owned(),
         };
         let mut asr = match AsrEngine::new(&asr_config) {
             Ok(e) => e,
