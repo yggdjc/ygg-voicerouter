@@ -96,3 +96,22 @@ max_connections = 8
 # [[pipeline.stages]]
 # name = "default"
 # handler = "inject"
+#
+
+# ── Conversation Mode ────────────────────────────────────────────────
+# Multi-turn voice conversation with LLM. Mutually exclusive with [continuous].
+[conversation]
+enabled = false
+timeout_seconds = 30          # inactivity timeout (from last turn)
+max_turn_seconds = 30         # max recording duration per turn
+end_phrases = ["结束", "再见", "没事了"]
+confidence_high = 0.8
+confidence_low = 0.5
+low_confidence_prefix = "我不太确定，"
+low_confidence_reject = "抱歉，我无法回答这个问题"
+llm_timeout_seconds = 15
+
+[conversation.llm]
+endpoint = "http://localhost:11434/v1"
+model = "qwen3.5:4b"
+system_prompt = "你是一个简洁的语音助手。用口语化的中文回答，保持简短。必须以JSON格式回复，包含reply(回答文本)和confidence(0-1置信度)两个字段。"
