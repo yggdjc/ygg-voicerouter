@@ -1,4 +1,7 @@
-//! Continuous listening mode — VAD, speaker verification, intent classification.
+//! Continuous listening mode — VAD, intent classification.
+//!
+//! Speaker verification (`speaker` module) is retained as a library for future
+//! use but is not wired into the runtime pipeline.
 
 pub mod intent;
 pub mod speaker;
@@ -17,11 +20,7 @@ use crate::pipeline::handler::RiskLevel;
 use crate::pipeline::handlers::build_handler;
 
 use intent::{Intent, IntentFilter};
-use speaker::SpeakerVerifier;
 use vad::EnergyVad;
-
-/// Path to the speaker enrollment embedding file.
-const SPEAKER_ENROLLMENT_PATH: &str = ".config/voicerouter/speaker.bin";
 
 pub struct ContinuousActor {
     config: Config,
@@ -42,252 +41,258 @@ struct StageInfo {
     risk: RiskLevel,
 }
 
+/// Runtime state initialised once at actor start.
+struct RuntimeState {
+    vad: EnergyVad,
+    asr_engine: Option<AsrEngine>,
+    stage_infos: Vec<StageInfo>,
+    intent_filter: IntentFilter,
+    available_actions: Vec<String>,
+    llm_client: Option<LlmClient>,
+    sample_rate: u32,
+}
+
+/// Build all runtime state from configuration.
+fn init_runtime(config: &Config) -> RuntimeState {
+    let vad = EnergyVad::new(
+        config.audio.sample_rate,
+        config.audio.silence_threshold as f32,
+    );
+
+    let stage_configs = config.effective_pipeline_stages();
+    let stage_infos: Vec<StageInfo> = stage_configs
+        .iter()
+        .map(|sc| {
+            let trigger = extract_trigger(&sc.condition);
+            let handler = build_handler(&sc.handler, config);
+            let risk = handler.risk_level();
+            StageInfo { trigger, name: sc.name.clone(), risk }
+        })
+        .collect();
+
+    let trigger_refs: Vec<&str> = stage_infos
+        .iter()
+        .filter(|s| !s.trigger.is_empty())
+        .map(|s| s.trigger.as_str())
+        .collect();
+    let intent_filter = IntentFilter::new(&trigger_refs);
+
+    let available_actions: Vec<String> = stage_infos
+        .iter()
+        .filter(|s| !s.trigger.is_empty())
+        .map(|s| s.trigger.clone())
+        .collect();
+
+    let llm_client = if !config.continuous.llm.endpoint.is_empty() {
+        match LlmClient::new(&config.continuous.llm) {
+            Ok(c) => {
+                log::info!("[continuous] LLM client ready");
+                Some(c)
+            }
+            Err(e) => {
+                log::warn!(
+                    "[continuous] LLM client init failed: {e:#}; \
+                     uncertain intents will be discarded"
+                );
+                None
+            }
+        }
+    } else {
+        log::info!("[continuous] no LLM endpoint configured");
+        None
+    };
+
+    RuntimeState {
+        vad,
+        asr_engine: None,
+        stage_infos,
+        intent_filter,
+        available_actions,
+        llm_client,
+        sample_rate: config.audio.sample_rate,
+    }
+}
+
+/// Process a single VAD speech segment: transcribe, classify, dispatch.
+///
+/// Returns `Some((text, stage))` when a high-risk confirmation is now pending.
+fn process_speech_segment(
+    segment: &[f32],
+    state: &mut RuntimeState,
+    config: &Config,
+    outbox: &Sender<Message>,
+) -> Option<(String, String)> {
+    let dur = segment.len() as f32 / state.sample_rate as f32;
+    log::info!("[continuous] VAD segment: {dur:.1}s, {} samples", segment.len());
+
+    // Lazy-init ASR engine.
+    if state.asr_engine.is_none() {
+        log::info!("[continuous] initialising ASR engine (lazy)");
+        match AsrEngine::new(&config.asr) {
+            Ok(e) => state.asr_engine = Some(e),
+            Err(e) => {
+                log::error!("[continuous] ASR init failed: {e:#}");
+                return None;
+            }
+        }
+    }
+
+    // Transcribe.
+    let transcript = match state
+        .asr_engine
+        .as_mut()
+        .unwrap()
+        .transcribe(segment, state.sample_rate)
+    {
+        Ok(t) if !t.is_empty() => t,
+        Ok(_) => {
+            log::debug!("[continuous] empty transcript");
+            return None;
+        }
+        Err(e) => {
+            log::error!("[continuous] transcription failed: {e:#}");
+            return None;
+        }
+    };
+
+    log::info!("[continuous] transcript: {transcript:?}");
+
+    let intent = state.intent_filter.classify(&transcript);
+    log::debug!("[continuous] intent: {intent:?}");
+
+    match intent {
+        Intent::Command => dispatch_command(&transcript, &state.stage_infos, outbox),
+        Intent::Uncertain => {
+            if let Some(ref client) = state.llm_client {
+                handle_uncertain(
+                    &transcript,
+                    client,
+                    &state.available_actions,
+                    &state.stage_infos,
+                    outbox,
+                )
+            } else {
+                log::debug!(
+                    "[continuous] discarding uncertain (no LLM): {transcript:?}"
+                );
+                None
+            }
+        }
+        Intent::Ambient => {
+            log::debug!("[continuous] ambient, discarding: {transcript:?}");
+            None
+        }
+    }
+}
+
 impl Actor for ContinuousActor {
     fn name(&self) -> &str {
         "continuous"
     }
 
     fn run(self, inbox: Receiver<Message>, outbox: Sender<Message>) {
-        // Init VAD.
-        let mut vad = EnergyVad::new(
-            self.config.audio.sample_rate,
-            self.config.audio.silence_threshold as f32,
-        );
-
-        // Load speaker verifier if enabled.
-        let speaker_verifier = if self.config.continuous.speaker_verify {
-            load_speaker_verifier(self.config.continuous.speaker_threshold as f32)
-        } else {
-            None
-        };
-
-        // Lazy ASR engine (initialized on first segment).
-        let mut asr_engine: Option<AsrEngine> = None;
-
-        // Build stage info from pipeline config for intent dispatch.
-        let stage_configs = self.config.effective_pipeline_stages();
-        let stage_infos: Vec<StageInfo> = stage_configs
-            .iter()
-            .map(|sc| {
-                let trigger = extract_trigger(&sc.condition);
-                let handler = build_handler(&sc.handler, &self.config);
-                let risk = handler.risk_level();
-                StageInfo {
-                    trigger,
-                    name: sc.name.clone(),
-                    risk,
-                }
-            })
-            .collect();
-
-        // Build trigger list for IntentFilter.
-        let trigger_refs: Vec<&str> = stage_infos
-            .iter()
-            .filter(|s| !s.trigger.is_empty())
-            .map(|s| s.trigger.as_str())
-            .collect();
-        let intent_filter = IntentFilter::new(&trigger_refs);
-
-        // Available actions for LLM classification.
-        let available_actions: Vec<String> = stage_infos
-            .iter()
-            .filter(|s| !s.trigger.is_empty())
-            .map(|s| s.trigger.clone())
-            .collect();
-
-        // Init LLM client (optional).
-        let llm_client = if !self.config.continuous.llm.endpoint.is_empty() {
-            match LlmClient::new(&self.config.continuous.llm) {
-                Ok(c) => {
-                    log::info!("[continuous] LLM client ready");
-                    Some(c)
-                }
-                Err(e) => {
-                    log::warn!(
-                        "[continuous] LLM client init failed: {e:#}; \
-                         uncertain intents will be discarded"
-                    );
-                    None
-                }
-            }
-        } else {
-            log::info!("[continuous] no LLM endpoint configured");
-            None
-        };
-
-        let sample_rate = self.config.audio.sample_rate;
+        let mut state = init_runtime(&self.config);
         let mut muted = false;
-        // Text waiting for ActionConfirmed before being sent to the pipeline.
-        let mut pending_confirm: Option<(String, String)> = None; // (text, stage)
+        let mut pending_confirm: Option<(String, String)> = None;
 
         log::info!("[continuous] ready");
 
         loop {
-            // Check control messages (non-blocking).
-            while let Ok(msg) = inbox.try_recv() {
-                match msg {
-                    Message::Shutdown => {
-                        log::info!("[continuous] stopped");
-                        return;
-                    }
-                    Message::MuteInput => {
-                        muted = true;
-                        log::debug!("[continuous] muted");
-                    }
-                    Message::UnmuteInput => {
-                        muted = false;
-                        log::debug!("[continuous] unmuted");
-                    }
-                    Message::ActionConfirmed => {
-                        if let Some((text, stage)) = pending_confirm.take() {
-                            log::info!(
-                                "[continuous] high-risk action confirmed, \
-                                 dispatching stage='{stage}'"
-                            );
-                            outbox
-                                .send(Message::PipelineInput {
-                                    text,
-                                    metadata: crate::actor::Metadata {
-                                        source: "continuous".to_string(),
-                                        timestamp: std::time::Instant::now(),
-                                    },
-                                })
-                                .ok();
-                        }
-                    }
-                    Message::ActionRejected => {
-                        if let Some((_, stage)) = pending_confirm.take() {
-                            log::info!(
-                                "[continuous] high-risk action rejected/timeout for \
-                                 stage='{stage}', discarding"
-                            );
-                        }
-                    }
-                    _ => {}
-                }
+            if drain_inbox(&inbox, &outbox, &mut muted, &mut pending_confirm) {
+                return; // Shutdown received
             }
 
-            // Read audio chunk.
             match self.audio_rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(chunk) => {
-                    if muted {
-                        continue;
-                    }
-                    vad.feed(&chunk, &mut |segment| {
-                        let dur = segment.len() as f32 / sample_rate as f32;
-                        log::info!(
-                            "[continuous] VAD segment: {dur:.1}s, \
-                             {} samples",
-                            segment.len()
-                        );
-
-                        // Drop new speech while a high-risk confirmation is pending.
-                        if pending_confirm.is_some() {
-                            log::debug!(
-                                "[continuous] ignoring segment, \
-                                 confirmation pending"
-                            );
-                            return;
-                        }
-
-                        // Speaker verification gate.
-                        if let Some(ref _verifier) = speaker_verifier {
-                            // TODO(task-8): extract embedding and verify.
-                            // For now, speaker verifier is loaded but embedding
-                            // extraction requires a model not yet integrated.
-                            // Skip verification until enrollment CLI is done.
-                            log::debug!(
-                                "[continuous] speaker verify: \
-                                 skipping (embedding extraction not yet wired)"
-                            );
-                        }
-
-                        // Lazy-init ASR engine.
-                        if asr_engine.is_none() {
-                            log::info!(
-                                "[continuous] initialising ASR engine (lazy)"
-                            );
-                            match AsrEngine::new(&self.config.asr) {
-                                Ok(e) => asr_engine = Some(e),
-                                Err(e) => {
-                                    log::error!(
-                                        "[continuous] ASR init failed: {e:#}"
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-
-                        // Transcribe.
-                        let transcript = match asr_engine
-                            .as_mut()
-                            .unwrap()
-                            .transcribe(segment, sample_rate)
-                        {
-                            Ok(t) if !t.is_empty() => t,
-                            Ok(_) => {
-                                log::debug!("[continuous] empty transcript");
-                                return;
-                            }
-                            Err(e) => {
-                                log::error!(
-                                    "[continuous] transcription failed: {e:#}"
-                                );
-                                return;
-                            }
-                        };
-
-                        log::info!(
-                            "[continuous] transcript: {transcript:?}"
-                        );
-
-                        // Classify intent.
-                        let intent = intent_filter.classify(&transcript);
-                        log::debug!(
-                            "[continuous] intent: {intent:?}"
-                        );
-
-                        let awaiting = match intent {
-                            Intent::Command => {
-                                dispatch_command(
-                                    &transcript,
-                                    &stage_infos,
-                                    &outbox,
-                                )
-                            }
-                            Intent::Uncertain => {
-                                if let Some(ref client) = llm_client {
-                                    handle_uncertain(
-                                        &transcript,
-                                        client,
-                                        &available_actions,
-                                        &stage_infos,
-                                        &outbox,
-                                    )
-                                } else {
-                                    log::debug!(
-                                        "[continuous] discarding uncertain \
-                                         (no LLM): {transcript:?}"
-                                    );
-                                    None
-                                }
-                            }
-                            Intent::Ambient => {
-                                log::debug!(
-                                    "[continuous] ambient, discarding: \
-                                     {transcript:?}"
-                                );
-                                None
-                            }
-                        };
-
-                        if let Some(pair) = awaiting {
-                            pending_confirm = Some(pair);
-                        }
-                    });
+                Ok(chunk) if !muted => {
+                    vad_feed(
+                        &mut state,
+                        &self.config,
+                        &chunk,
+                        &outbox,
+                        &mut pending_confirm,
+                    );
                 }
-                Err(_) => {} // timeout, loop back to check inbox
+                _ => {} // muted or timeout
             }
+        }
+    }
+}
+
+/// Drain all pending control messages from the inbox.
+///
+/// Returns `true` if `Shutdown` was received.
+fn drain_inbox(
+    inbox: &Receiver<Message>,
+    outbox: &Sender<Message>,
+    muted: &mut bool,
+    pending_confirm: &mut Option<(String, String)>,
+) -> bool {
+    while let Ok(msg) = inbox.try_recv() {
+        match msg {
+            Message::Shutdown => {
+                log::info!("[continuous] stopped");
+                return true;
+            }
+            Message::MuteInput => {
+                *muted = true;
+                log::debug!("[continuous] muted");
+            }
+            Message::UnmuteInput => {
+                *muted = false;
+                log::debug!("[continuous] unmuted");
+            }
+            Message::ActionConfirmed => {
+                if let Some((text, stage)) = pending_confirm.take() {
+                    log::info!(
+                        "[continuous] high-risk action confirmed, \
+                         dispatching stage='{stage}'"
+                    );
+                    outbox
+                        .send(Message::PipelineInput {
+                            text,
+                            metadata: Metadata {
+                                source: "continuous".to_string(),
+                                timestamp: Instant::now(),
+                            },
+                        })
+                        .ok();
+                }
+            }
+            Message::ActionRejected => {
+                if let Some((_, stage)) = pending_confirm.take() {
+                    log::info!(
+                        "[continuous] high-risk action rejected/timeout for \
+                         stage='{stage}', discarding"
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Feed an audio chunk to VAD and process any resulting speech segments.
+fn vad_feed(
+    state: &mut RuntimeState,
+    config: &Config,
+    chunk: &AudioChunk,
+    outbox: &Sender<Message>,
+    pending_confirm: &mut Option<(String, String)>,
+) {
+    // Collect segments first to avoid borrowing state in the VAD callback.
+    let mut segments: Vec<Vec<f32>> = Vec::new();
+    state.vad.feed(chunk, &mut |segment| {
+        segments.push(segment.to_vec());
+    });
+
+    for segment in &segments {
+        if pending_confirm.is_some() {
+            log::debug!("[continuous] ignoring segment, confirmation pending");
+            break;
+        }
+        if let Some(pair) = process_speech_segment(segment, state, config, outbox) {
+            *pending_confirm = Some(pair);
         }
     }
 }
@@ -299,55 +304,6 @@ fn extract_trigger(condition: &Option<String>) -> String {
         .and_then(|c| c.strip_prefix("starts_with:"))
         .unwrap_or("")
         .to_string()
-}
-
-/// Load speaker enrollment from disk.
-fn load_speaker_verifier(threshold: f32) -> Option<SpeakerVerifier> {
-    let home = match dirs::home_dir() {
-        Some(h) => h,
-        None => {
-            log::warn!(
-                "[continuous] cannot determine home dir for speaker enrollment"
-            );
-            return None;
-        }
-    };
-    let path = home.join(SPEAKER_ENROLLMENT_PATH);
-    if !path.exists() {
-        log::warn!(
-            "[continuous] speaker enrollment not found at {}; \
-             speaker verification disabled",
-            path.display()
-        );
-        return None;
-    }
-
-    match std::fs::read(&path) {
-        Ok(bytes) => {
-            // Enrollment file is raw f32 little-endian embedding.
-            if bytes.len() % 4 != 0 {
-                log::warn!(
-                    "[continuous] invalid speaker enrollment file size"
-                );
-                return None;
-            }
-            let embedding: Vec<f32> = bytes
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect();
-            log::info!(
-                "[continuous] loaded speaker enrollment ({} dims)",
-                embedding.len()
-            );
-            Some(SpeakerVerifier::from_enrollment(embedding, threshold))
-        }
-        Err(e) => {
-            log::warn!(
-                "[continuous] failed to read speaker enrollment: {e}"
-            );
-            None
-        }
-    }
 }
 
 /// Dispatch a Command intent to the pipeline.

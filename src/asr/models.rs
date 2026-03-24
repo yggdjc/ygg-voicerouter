@@ -5,7 +5,6 @@
 //! - `whisper-tiny-en`, `whisper-base-en`: Whisper variants for English.
 //! - `funasr-nano`: FunASR Nano 0.8B LLM-based model (zh/en/ja, with ITN).
 //! - `silero-vad`: Silero VAD ONNX model for voice activity detection (~2 MB).
-//! - `3dspeaker`: 3D-Speaker speaker embedding model from sherpa-onnx (~20 MB).
 //!
 //! Model files are stored under a configurable directory (default:
 //! `~/.cache/voicerouter/models/<model_name>/`).
@@ -154,19 +153,9 @@ pub fn model_info(model_name: &str, model_dir: &Path) -> Result<ModelInfo> {
                 local_path: base.join("silero_vad.onnx"),
             }],
         }),
-        "3dspeaker" => Ok(ModelInfo {
-            name: model_name.to_owned(),
-            files: vec![ModelFile {
-                url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/\
-                      speaker-recongition-models/\
-                      3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
-                    .to_owned(),
-                local_path: base.join("model.onnx"),
-            }],
-        }),
         other => bail!(
             "unsupported model '{other}'. Supported: paraformer-zh, funasr-nano, ct-punc, \
-             whisper-tiny-en, whisper-base-en, silero-vad, 3dspeaker"
+             whisper-tiny-en, whisper-base-en, silero-vad"
         ),
     }
 }

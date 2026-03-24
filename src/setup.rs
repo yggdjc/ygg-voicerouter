@@ -97,7 +97,7 @@ fn ensure_default_config() -> Result<()> {
 /// model + ct-punc. If "all", downloads all supported models.
 ///
 /// Options: paraformer-zh, funasr-nano, whisper-tiny-en, whisper-base-en,
-///          ct-punc, silero-vad, 3dspeaker, all
+///          ct-punc, silero-vad, all
 pub fn download(config: &Config, model: Option<&str>) -> Result<()> {
     if !is_command_available("curl") {
         bail!("curl is required for downloading models. Install it first.");
@@ -114,7 +114,6 @@ pub fn download(config: &Config, model: Option<&str>) -> Result<()> {
             "whisper-base-en",
             "ct-punc",
             "silero-vad",
-            "3dspeaker",
         ],
         Some(name) => vec![name],
         None => vec![&config.asr.model, "ct-punc"],
@@ -123,7 +122,7 @@ pub fn download(config: &Config, model: Option<&str>) -> Result<()> {
     // tar is only needed when downloading archive-based models.
     let needs_tar = models_to_download
         .iter()
-        .any(|n| !matches!(*n, "silero-vad" | "3dspeaker"));
+        .any(|n| !matches!(*n, "silero-vad"));
 
     if needs_tar && !is_command_available("tar") {
         bail!("tar is required for extracting archive models. Install it first.");

@@ -34,7 +34,7 @@ api_key_env = "TEST_KEY"
 fn continuous_config_defaults() {
     let config = Config::default();
     assert!(!config.continuous.enabled);
-    assert!(config.continuous.speaker_verify);
+    assert!(!config.continuous.speaker_verify);
     assert_eq!(config.continuous.speaker_threshold, 0.6);
     assert_eq!(config.continuous.llm.model, "claude-haiku");
 }

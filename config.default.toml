@@ -60,11 +60,12 @@ stride_seconds = 1.0
 action = "start_recording"
 
 [continuous]
-# Always-on listening with VAD + speaker verification + intent classification.
+# Always-on listening with VAD + intent classification.
 enabled = false
-speaker_verify = true
-speaker_threshold = 0.6
-speaker_model = "3dspeaker"
+# Speaker verification is planned for a future release.
+# speaker_verify = false
+# speaker_threshold = 0.6
+# speaker_model = "3dspeaker"
 vad_model = "silero"
 
 [continuous.llm]

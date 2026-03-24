@@ -171,14 +171,11 @@ action = "start_recording"   # start_recording | pipeline_passthrough
 
 ### Continuous Listening
 
-Always-on mode with VAD, speaker verification, and intent classification. Detects speech segments, verifies the speaker, transcribes, and classifies as command or ambient speech.
+Always-on mode with VAD and intent classification. Detects speech segments, transcribes, and classifies as command or ambient speech.
 
 ```toml
 [continuous]
 enabled = false              # off by default, enable explicitly
-speaker_verify = true        # require enrolled speaker voice match
-speaker_threshold = 0.6      # cosine similarity threshold
-speaker_model = "3dspeaker"
 vad_model = "silero"
 
 [continuous.llm]
@@ -187,12 +184,9 @@ model = "claude-haiku"
 api_key_env = "VOICEROUTER_LLM_KEY"
 ```
 
-Enroll your voice for speaker verification:
-```bash
-voicerouter enroll
-```
-
 High-risk actions (shell, http, pipe) require hotkey confirmation. Low-risk actions (inject, speak, transform) execute silently.
+
+Speaker verification (`speaker_verify`) is planned for a future release.
 
 ### Injection Method
 

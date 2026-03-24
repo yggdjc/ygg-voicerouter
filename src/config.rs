@@ -374,7 +374,7 @@ impl Default for ContinuousConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            speaker_verify: true,
+            speaker_verify: false,
             speaker_threshold: 0.6,
             speaker_model: "3dspeaker".to_owned(),
             vad_model: "silero".to_owned(),
