@@ -45,8 +45,10 @@ fn parse_ollama_json_response() {
 }
 
 #[test]
-fn parse_malformed_ollama_response() {
-    assert!(parse_chat_json(r#"{"reply": "hi""#).is_err());
+fn parse_malformed_ollama_response_falls_back() {
+    // Malformed JSON falls back to treating as plain text reply.
+    let resp = parse_chat_json(r#"{"reply": "hi""#).unwrap();
+    assert!(!resp.reply.is_empty());
 }
 
 #[test]

@@ -20,11 +20,36 @@ pub fn parse_llm_response(json: &str) -> Result<LlmResponse> {
 }
 
 /// Parse a conversation JSON response string into ConversationResponse.
-pub fn parse_chat_json(json: &str) -> Result<ConversationResponse> {
-    let mut resp: ConversationResponse =
-        serde_json::from_str(json).context("failed to parse conversation JSON")?;
-    resp.confidence = resp.confidence.clamp(0.0, 1.0);
-    Ok(resp)
+/// Parse LLM output as conversation response.
+///
+/// Tries JSON first. If that fails, attempts to extract a JSON object from
+/// the text (models sometimes wrap JSON in markdown or extra text). As a
+/// last resort, treats the entire text as the reply with confidence 1.0.
+pub fn parse_chat_json(text: &str) -> Result<ConversationResponse> {
+    let trimmed = text.trim();
+
+    // Try direct parse.
+    if let Ok(mut resp) = serde_json::from_str::<ConversationResponse>(trimmed) {
+        resp.confidence = resp.confidence.clamp(0.0, 1.0);
+        return Ok(resp);
+    }
+
+    // Try extracting JSON object from surrounding text.
+    if let Some(start) = trimmed.find('{') {
+        if let Some(end) = trimmed.rfind('}') {
+            let candidate = &trimmed[start..=end];
+            if let Ok(mut resp) = serde_json::from_str::<ConversationResponse>(candidate) {
+                resp.confidence = resp.confidence.clamp(0.0, 1.0);
+                return Ok(resp);
+            }
+        }
+    }
+
+    // Fallback: treat entire text as reply.
+    Ok(ConversationResponse {
+        reply: trimmed.to_string(),
+        confidence: 1.0,
+    })
 }
 
 /// Build the system prompt for intent classification.
@@ -72,13 +97,6 @@ struct ConversationChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
     stream: bool,
-    response_format: ResponseFormat,
-}
-
-#[derive(Serialize)]
-struct ResponseFormat {
-    #[serde(rename = "type")]
-    fmt_type: String,
 }
 
 #[derive(Deserialize)]
@@ -167,7 +185,6 @@ impl LlmClient {
             model: self.model.clone(),
             messages: messages.to_vec(),
             stream: false,
-            response_format: ResponseFormat { fmt_type: "json_object".into() },
         };
         let body = serde_json::to_string(&request)
             .context("failed to serialize conversation request")?;
@@ -215,9 +232,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_chat_response_invalid_json() {
-        let result = parse_chat_json("not json");
-        assert!(result.is_err());
+    fn parse_chat_response_plain_text_fallback() {
+        let resp = parse_chat_json("not json").unwrap();
+        assert_eq!(resp.reply, "not json");
+        assert!((resp.confidence - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parse_chat_response_json_in_markdown() {
+        let text = "Here is the answer:\n```json\n{\"reply\": \"你好\", \"confidence\": 0.9}\n```";
+        let resp = parse_chat_json(text).unwrap();
+        assert_eq!(resp.reply, "你好");
     }
 
     #[test]
