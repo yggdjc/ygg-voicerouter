@@ -303,8 +303,7 @@ fn handle_speak_done_cooldown(
     config: &Config,
 ) -> Option<ControlResult> {
     log::debug!("[conversation] all sentences spoken, cooldown before listening");
-    // Match the done cue duration (G4, 200ms) so mic doesn't pick up the cue itself.
-    let cooldown_end = Instant::now() + Duration::from_millis(200);
+    let cooldown_end = Instant::now() + Duration::from_millis(500);
     while Instant::now() < cooldown_end {
         if let Ok(Message::Shutdown) = inbox.try_recv() {
             return Some(ControlResult::Shutdown);
