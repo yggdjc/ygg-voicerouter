@@ -306,10 +306,9 @@ fn drain_control(
                     start_session(state, session, vad, config, outbox);
                 }
             }
-            Message::EndConversation => {
+            Message::EndConversation | Message::StartListening { .. } => {
                 if *state != State::Idle {
-                    log::info!("[conversation] ending session by request");
-                    speak_text("好的，再见", outbox);
+                    log::info!("[conversation] ending session (reason: {msg:?})");
                     end_session(outbox, config.sound.feedback);
                     *state = State::Idle;
                     *session = None;

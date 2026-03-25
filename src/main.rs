@@ -245,6 +245,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
         let (tx, rx) = crossbeam::channel::bounded::<Message>(32);
         bus.subscribe("StartConversation", tx.clone());
         bus.subscribe("EndConversation", tx.clone());
+        bus.subscribe("StartListening", tx.clone());
         bus.subscribe("SpeakDone", tx.clone());
         bus.subscribe("Shutdown", tx.clone());
         Some((tx, rx))
