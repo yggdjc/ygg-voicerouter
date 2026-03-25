@@ -115,7 +115,7 @@ impl Actor for ConversationActor {
                         &mut recording_start,
                     );
                     if new_state == State::Recording && feedback {
-                        crate::sound::beep_start().ok();
+                        crate::sound::beep_done().ok();
                     }
                     state = new_state;
                 }
@@ -392,7 +392,7 @@ fn start_session(
     }));
     outbox.send(Message::MuteInput).ok();
     if config.sound.feedback {
-        crate::sound::beep_start().ok();
+        crate::sound::beep_done().ok();
     }
     *state = State::Listening;
 }
