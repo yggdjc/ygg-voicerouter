@@ -24,20 +24,20 @@ impl Session {
         }
     }
 
-    pub fn add_user_message(&mut self, content: &str) {
+    fn add_message(&mut self, role: &str, content: &str) {
         self.history.push(ChatMessage {
-            role: "user".into(),
+            role: role.to_string(),
             content: content.to_string(),
         });
         self.last_activity = Instant::now();
     }
 
+    pub fn add_user_message(&mut self, content: &str) {
+        self.add_message("user", content);
+    }
+
     pub fn add_assistant_message(&mut self, content: &str) {
-        self.history.push(ChatMessage {
-            role: "assistant".into(),
-            content: content.to_string(),
-        });
-        self.last_activity = Instant::now();
+        self.add_message("assistant", content);
     }
 
     pub fn messages(&self) -> Vec<ChatMessage> {

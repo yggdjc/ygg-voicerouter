@@ -209,6 +209,19 @@ fn end_session(outbox: &Sender<Message>, feedback: bool) {
     outbox.send(Message::UnmuteInput).ok();
 }
 
+fn end_conversation(
+    outbox: &Sender<Message>,
+    feedback: bool,
+    state: &mut State,
+    session: &mut Option<Session>,
+    vad: &mut Option<VadDetector>,
+) {
+    end_session(outbox, feedback);
+    *state = State::Idle;
+    *session = None;
+    *vad = None;
+}
+
 fn reset_state(
     state: &mut State,
     session: &mut Option<Session>,
@@ -282,6 +295,35 @@ enum ControlResult {
     Shutdown,
 }
 
+fn handle_speak_done_cooldown(
+    inbox: &Receiver<Message>,
+    audio_rx: &Receiver<AudioChunk>,
+    vad: &mut Option<VadDetector>,
+    session: &mut Option<Session>,
+    config: &Config,
+) -> Option<ControlResult> {
+    log::debug!("[conversation] all sentences spoken, cooldown before listening");
+    let cooldown_end = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < cooldown_end {
+        if let Ok(Message::Shutdown) = inbox.try_recv() {
+            return Some(ControlResult::Shutdown);
+        }
+        while audio_rx.try_recv().is_ok() {}
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Reset VAD state so it doesn't carry over TTS audio.
+    if let Some(ref mut v) = vad {
+        *v = crate::vad::VadDetector::new(&crate::vad::VadConfig {
+            sample_rate: config.audio.sample_rate,
+            threshold: config.audio.silence_threshold as f32,
+        });
+    }
+    if let Some(ref mut s) = session {
+        s.last_activity = Instant::now();
+    }
+    None
+}
+
 fn drain_control(
     inbox: &Receiver<Message>,
     audio_rx: &Receiver<AudioChunk>,
@@ -309,10 +351,7 @@ fn drain_control(
             Message::EndConversation | Message::StartListening { .. } => {
                 if *state != State::Idle {
                     log::info!("[conversation] ending session (reason: {msg:?})");
-                    end_session(outbox, config.sound.feedback);
-                    *state = State::Idle;
-                    *session = None;
-                    *vad = None;
+                    end_conversation(outbox, config.sound.feedback, state, session, vad);
                     *pending_sentences = 0;
                 }
             }
@@ -320,31 +359,12 @@ fn drain_control(
                 if *state == State::Speaking {
                     *pending_sentences = pending_sentences.saturating_sub(1);
                     if *pending_sentences == 0 {
-                        log::debug!("[conversation] all sentences spoken, cooldown before listening");
-                        // Drain buffered audio accumulated during TTS playback.
-                        // TTS sends MuteInput/UnmuteInput for CoreActor, but our audio
-                        // channel still buffers chunks during Speaking state. Drain them
-                        // plus a brief wait for speaker→mic echo decay (~300ms typical
-                        // indoor reverb tail for near-field speakers).
-                        let cooldown_end = Instant::now() + Duration::from_millis(300);
-                        while Instant::now() < cooldown_end {
-                            if let Ok(Message::Shutdown) = inbox.try_recv() {
-                                return ControlResult::Shutdown;
-                            }
-                            while audio_rx.try_recv().is_ok() {}
-                            std::thread::sleep(Duration::from_millis(10));
-                        }
-                        // Reset VAD state so it doesn't carry over TTS audio.
-                        if let Some(ref mut v) = vad {
-                            *v = crate::vad::VadDetector::new(&crate::vad::VadConfig {
-                                sample_rate: config.audio.sample_rate,
-                                threshold: config.audio.silence_threshold as f32,
-                            });
+                        if let Some(result) = handle_speak_done_cooldown(
+                            inbox, audio_rx, vad, session, config,
+                        ) {
+                            return result;
                         }
                         *state = State::Listening;
-                        if let Some(ref mut s) = session {
-                            s.last_activity = Instant::now();
-                        }
                     }
                 }
             }
@@ -520,9 +540,7 @@ fn finalize_transcript(
     if sess.is_end_phrase(transcript) {
         log::info!("[conversation] end phrase detected");
         speak_text("好的，再见", outbox);
-        end_session(outbox, config.sound.feedback);
-        *session = None;
-        *vad = None;
+        end_conversation(outbox, config.sound.feedback, &mut State::Idle, session, vad);
         return State::Idle;
     }
 
@@ -557,9 +575,8 @@ fn handle_thinking(
         Err(e) => {
             log::error!("[conversation] LLM failed after retry: {e:#}");
             speak_text("抱歉，我暂时无法回答", outbox);
-            end_session(outbox, config.sound.feedback);
-            *session = None;
-            *vad = None;
+            let mut s = State::Idle;
+            end_conversation(outbox, config.sound.feedback, &mut s, session, vad);
             return State::Idle;
         }
     };

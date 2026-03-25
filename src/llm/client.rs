@@ -137,6 +137,26 @@ impl LlmClient {
         })
     }
 
+    /// Send a chat completion request and return the content string from the first choice.
+    fn send_request(&self, body: &str, timeout_secs: u64) -> Result<String> {
+        let url = format!("{}/chat/completions", self.endpoint.trim_end_matches('/'));
+        let mut req = ureq::post(&url)
+            .set("Content-Type", "application/json")
+            .timeout(std::time::Duration::from_secs(timeout_secs));
+        if !self.api_key.is_empty() {
+            req = req.set("Authorization", &format!("Bearer {}", self.api_key));
+        }
+        let response = req.send_string(body).context("API request failed")?;
+        let response_text = response.into_string().context("failed to read API response body")?;
+        let chat_resp: ChatResponse =
+            serde_json::from_str(&response_text).context("failed to parse API response")?;
+        Ok(chat_resp
+            .choices
+            .first()
+            .map(|c| c.message.content.clone())
+            .unwrap_or_default())
+    }
+
     /// Classify a transcript using the LLM.
     pub fn classify(
         &self,
@@ -144,7 +164,6 @@ impl LlmClient {
         available_actions: &[String],
     ) -> Result<LlmResponse> {
         let system_prompt = build_system_prompt(available_actions);
-        let url = format!("{}/chat/completions", self.endpoint.trim_end_matches('/'));
         let request = ChatRequest {
             model: self.model.clone(),
             messages: vec![
@@ -153,25 +172,9 @@ impl LlmClient {
             ],
             temperature: 0.0,
         };
-        let body = serde_json::to_string(&request).context("failed to serialize chat request")?;
-
-        let mut req = ureq::post(&url)
-            .set("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_secs(5));
-        if !self.api_key.is_empty() {
-            req = req.set("Authorization", &format!("Bearer {}", self.api_key));
-        }
-
-        let response = req.send_string(&body).context("LLM API request failed")?;
-        let response_text = response.into_string().context("failed to read LLM API response body")?;
-        let chat_resp: ChatResponse =
-            serde_json::from_str(&response_text).context("failed to parse LLM API response")?;
-        let content = chat_resp
-            .choices
-            .first()
-            .map(|c| c.message.content.as_str())
-            .unwrap_or("");
-        parse_llm_response(content)
+        let body = serde_json::to_string(&request).context("failed to serialize request")?;
+        let content = self.send_request(&body, 5)?;
+        parse_llm_response(&content)
     }
 
     /// Send a multi-turn conversation to the LLM and receive a structured reply.
@@ -180,34 +183,14 @@ impl LlmClient {
         messages: &[ChatMessage],
         timeout_secs: u64,
     ) -> Result<ConversationResponse> {
-        let url = format!("{}/chat/completions", self.endpoint.trim_end_matches('/'));
         let request = ConversationChatRequest {
             model: self.model.clone(),
             messages: messages.to_vec(),
             stream: false,
         };
-        let body = serde_json::to_string(&request)
-            .context("failed to serialize conversation request")?;
-
-        let mut req = ureq::post(&url)
-            .set("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_secs(timeout_secs));
-        if !self.api_key.is_empty() {
-            req = req.set("Authorization", &format!("Bearer {}", self.api_key));
-        }
-
-        let response = req.send_string(&body).context("conversation API request failed")?;
-        let response_text = response
-            .into_string()
-            .context("failed to read conversation API response body")?;
-        let chat_resp: ChatResponse =
-            serde_json::from_str(&response_text).context("failed to parse API response")?;
-        let content = chat_resp
-            .choices
-            .first()
-            .map(|c| c.message.content.as_str())
-            .unwrap_or("{}");
-        parse_chat_json(content)
+        let body = serde_json::to_string(&request).context("failed to serialize request")?;
+        let content = self.send_request(&body, timeout_secs)?;
+        parse_chat_json(&content)
     }
 }
 

@@ -46,44 +46,58 @@ impl VadDetector {
     pub fn feed(&mut self, samples: &[f32]) -> Vec<VadEvent> {
         let mut events = Vec::new();
         for chunk in samples.chunks(WINDOW_SAMPLES) {
-            let rms = audio::compute_rms(chunk);
-            let is_speech = rms >= self.threshold;
-
-            if !self.in_speech {
-                if is_speech {
-                    self.onset_sample = self.buffer.len();
-                    self.buffer.extend_from_slice(chunk);
-                    self.speech_end = self.buffer.len();
-                    self.silence_samples = 0;
-                    self.in_speech = true;
-                }
-            } else {
-                self.buffer.extend_from_slice(chunk);
-
-                if is_speech {
-                    self.silence_samples = 0;
-                    self.speech_end = self.buffer.len();
-                } else {
-                    self.silence_samples += chunk.len();
-                    let silence_secs =
-                        self.silence_samples as f32 / self.sample_rate as f32;
-
-                    if silence_secs >= SILENCE_AFTER_SPEECH_SECS {
-                        let segment = &self.buffer[self.onset_sample..self.speech_end];
-                        let dur = segment.len() as f32 / self.sample_rate as f32;
-
-                        if dur >= MIN_SEGMENT_SECS {
-                            events.push(VadEvent::Segment(segment.to_vec()));
-                        }
-
-                        self.buffer.clear();
-                        self.silence_samples = 0;
-                        self.in_speech = false;
-                    }
-                }
+            if let Some(segment) = self.process_window(chunk) {
+                events.push(VadEvent::Segment(segment));
             }
         }
         events
+    }
+
+    /// Process a single analysis window. Returns Some(segment) if a complete speech segment was detected.
+    fn process_window(&mut self, chunk: &[f32]) -> Option<Vec<f32>> {
+        let rms = audio::compute_rms(chunk);
+        let is_speech = rms >= self.threshold;
+
+        if !self.in_speech {
+            if is_speech {
+                self.onset_sample = self.buffer.len();
+                self.buffer.extend_from_slice(chunk);
+                self.speech_end = self.buffer.len();
+                self.silence_samples = 0;
+                self.in_speech = true;
+            }
+            return None;
+        }
+
+        // Currently in speech
+        self.buffer.extend_from_slice(chunk);
+
+        if is_speech {
+            self.silence_samples = 0;
+            self.speech_end = self.buffer.len();
+            return None;
+        }
+
+        // Silence during speech — check if enough to end segment
+        self.silence_samples += chunk.len();
+        let silence_secs = self.silence_samples as f32 / self.sample_rate as f32;
+
+        if silence_secs < SILENCE_AFTER_SPEECH_SECS {
+            return None;
+        }
+
+        let segment = &self.buffer[self.onset_sample..self.speech_end];
+        let dur = segment.len() as f32 / self.sample_rate as f32;
+        let result = if dur >= MIN_SEGMENT_SECS {
+            Some(segment.to_vec())
+        } else {
+            None
+        };
+
+        self.buffer.clear();
+        self.silence_samples = 0;
+        self.in_speech = false;
+        result
     }
 }
 
