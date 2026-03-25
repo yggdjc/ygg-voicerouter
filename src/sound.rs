@@ -29,6 +29,7 @@ const C5: f32 = 523.25;
 const E5: f32 = 659.25;
 const G5: f32 = 783.99;
 const A4: f32 = 440.0;
+const G4: f32 = 392.00;
 const G_SHARP4: f32 = 415.30;
 
 // ---------------------------------------------------------------------------
@@ -46,10 +47,11 @@ pub fn beep_start() -> Result<()> {
     })
 }
 
-/// Play a C-major chord (C5+E5+G5, 120 ms) — done.
+/// Play a single G4 tone with gentle decay (200 ms) — done.
 pub fn beep_done() -> Result<()> {
     spawn_playback("voicerouter-cue-done", || {
-        let pcm = gen_chord(&[C5, E5, G5], 120);
+        let harmonics: &[(f32, f32)] = &[(1.0, 1.0), (2.0, 0.15)];
+        let pcm = gen_harmonic_tone(G4, 200, harmonics);
         play_pcm_blocking(&pcm, "done")
     })
 }
