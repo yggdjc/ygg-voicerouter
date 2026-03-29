@@ -39,11 +39,19 @@ fn main() {
         let ws = wave_state.clone();
         let hs = hide_source.clone();
 
+        // Track whether the auto-hide timer has already fired.
+        // Shared between the timer callback and message handler.
+        let timer_fired: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+
         glib::spawn_future_local(async move {
             while let Ok(msg) = rx.recv().await {
+                // Cancel pending auto-hide timer if it hasn't fired yet.
                 if let Some(id) = hs.take() {
-                    id.remove();
+                    if !timer_fired.get() {
+                        id.remove();
+                    }
                 }
+                timer_fired.set(false);
 
                 match msg {
                     OverlayMsg::Recording { level } => {
@@ -66,9 +74,11 @@ fn main() {
 
                         let w2 = w.clone();
                         let ws2 = ws.clone();
+                        let tf = timer_fired.clone();
                         let id = glib::timeout_add_local_once(
                             Duration::from_secs(2),
                             move || {
+                                tf.set(true);
                                 ws2.mode.set(WaveMode::Off);
                                 w2.set_visible(false);
                             },
