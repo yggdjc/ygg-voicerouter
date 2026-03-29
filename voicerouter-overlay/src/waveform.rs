@@ -34,8 +34,27 @@ pub enum WaveMode {
     Off,
 }
 
+/// RGBA color for waveform bars.
+#[derive(Debug, Clone, Copy)]
+pub struct BarColor {
+    pub r: f64,
+    pub g: f64,
+    pub b: f64,
+    pub a: f64,
+}
+
+impl BarColor {
+    /// Blue-500: recording state.
+    pub const RECORDING: Self = Self { r: 0.231, g: 0.510, b: 0.965, a: 0.90 };
+    /// Purple-600: thinking/processing state.
+    pub const THINKING: Self = Self { r: 0.576, g: 0.200, b: 0.918, a: 0.80 };
+    /// Default white (fallback).
+    pub const DEFAULT: Self = Self { r: 1.0, g: 1.0, b: 1.0, a: 0.9 };
+}
+
 pub struct WaveformState {
     pub mode: Cell<WaveMode>,
+    pub color: Cell<BarColor>,
     heights: [Cell<f64>; BAR_COUNT],
     tick: Cell<u64>,
 }
@@ -44,6 +63,7 @@ impl WaveformState {
     pub fn new() -> Self {
         Self {
             mode: Cell::new(WaveMode::Off),
+            color: Cell::new(BarColor::DEFAULT),
             heights: std::array::from_fn(|_| Cell::new(MIN_HEIGHT)),
             tick: Cell::new(0),
         }
@@ -84,7 +104,8 @@ impl WaveformState {
 
     pub fn draw(&self, cr: &gtk4::cairo::Context, _width: f64, height: f64) {
         let y_center = height / 2.0;
-        cr.set_source_rgba(1.0, 1.0, 1.0, 0.9);
+        let c = self.color.get();
+        cr.set_source_rgba(c.r, c.g, c.b, c.a);
 
         for (i, _) in WEIGHTS.iter().enumerate() {
             let bar_h = self.heights[i].get();

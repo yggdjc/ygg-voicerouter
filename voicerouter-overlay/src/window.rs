@@ -75,13 +75,14 @@ pub fn build_window(
     let css = CssProvider::new();
     css.load_from_data(
         "#overlay-box { \
-             background-color: rgba(40, 40, 40, 0.80); \
+             background-color: rgba(24, 24, 27, 0.82); \
              border-radius: 28px; \
-             padding: 12px 16px 12px 12px; \
-             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4); \
+             padding: 14px 20px 14px 14px; \
+             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.30), \
+                         0 2px 8px rgba(0, 0, 0, 0.20); \
          } \
          #status-label { \
-             color: #ffffff; \
+             color: rgba(250, 250, 250, 0.92); \
              font-family: sans-serif; \
              font-size: 14px; \
          }",

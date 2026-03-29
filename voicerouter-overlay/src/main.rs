@@ -8,7 +8,7 @@ mod window;
 use gtk4::prelude::*;
 
 use protocol::OverlayMsg;
-use waveform::WaveMode;
+use waveform::{BarColor, WaveMode};
 
 fn main() {
     env_logger::Builder::from_env(
@@ -35,26 +35,28 @@ fn main() {
             while let Ok(msg) = rx.recv().await {
                 match msg {
                     OverlayMsg::Recording { level } => {
+                        ws.color.set(BarColor::RECORDING);
                         ws.mode.set(WaveMode::Level(level));
                         l.set_text("Listening...");
-                        l.set_opacity(0.9);
+                        l.set_opacity(0.92);
                         w.set_visible(true);
                     }
                     OverlayMsg::Transcribing => {
+                        ws.color.set(BarColor::THINKING);
                         ws.mode.set(WaveMode::Pulse);
                         l.set_text("Transcribing...");
-                        l.set_opacity(0.7);
+                        l.set_opacity(0.70);
                         w.set_visible(true);
                     }
                     OverlayMsg::Result { .. } => {
-                        // Dismiss immediately — no need to show the result text.
                         ws.mode.set(WaveMode::Off);
                         w.set_visible(false);
                     }
                     OverlayMsg::Thinking => {
+                        ws.color.set(BarColor::THINKING);
                         ws.mode.set(WaveMode::Pulse);
                         l.set_text("Thinking...");
-                        l.set_opacity(0.7);
+                        l.set_opacity(0.70);
                         w.set_visible(true);
                     }
                     OverlayMsg::Idle => {
