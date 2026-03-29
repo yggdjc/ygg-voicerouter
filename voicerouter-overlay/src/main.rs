@@ -5,11 +5,6 @@ mod protocol;
 mod waveform;
 mod window;
 
-use std::cell::Cell;
-use std::rc::Rc;
-use std::time::Duration;
-
-use gtk4::glib;
 use gtk4::prelude::*;
 
 use protocol::OverlayMsg;
@@ -30,29 +25,14 @@ fn main() {
     app.connect_activate(|app| {
         let (window, label, wave_state) = window::build_window(app);
 
-        let hide_source: Rc<Cell<Option<glib::SourceId>>> = Rc::new(Cell::new(None));
-
         let rx = controller::start_listener();
 
         let w = window.clone();
         let l = label.clone();
         let ws = wave_state.clone();
-        let hs = hide_source.clone();
 
-        // Track whether the auto-hide timer has already fired.
-        // Shared between the timer callback and message handler.
-        let timer_fired: Rc<Cell<bool>> = Rc::new(Cell::new(false));
-
-        glib::spawn_future_local(async move {
+        gtk4::glib::spawn_future_local(async move {
             while let Ok(msg) = rx.recv().await {
-                // Cancel pending auto-hide timer if it hasn't fired yet.
-                if let Some(id) = hs.take() {
-                    if !timer_fired.get() {
-                        id.remove();
-                    }
-                }
-                timer_fired.set(false);
-
                 match msg {
                     OverlayMsg::Recording { level } => {
                         ws.mode.set(WaveMode::Level(level));
@@ -66,24 +46,10 @@ fn main() {
                         l.set_opacity(0.7);
                         w.set_visible(true);
                     }
-                    OverlayMsg::Result { ref text } => {
-                        ws.mode.set(WaveMode::Frozen);
-                        l.set_text(text);
-                        l.set_opacity(0.9);
-                        w.set_visible(true);
-
-                        let w2 = w.clone();
-                        let ws2 = ws.clone();
-                        let tf = timer_fired.clone();
-                        let id = glib::timeout_add_local_once(
-                            Duration::from_secs(2),
-                            move || {
-                                tf.set(true);
-                                ws2.mode.set(WaveMode::Off);
-                                w2.set_visible(false);
-                            },
-                        );
-                        hs.set(Some(id));
+                    OverlayMsg::Result { .. } => {
+                        // Dismiss immediately — no need to show the result text.
+                        ws.mode.set(WaveMode::Off);
+                        w.set_visible(false);
                     }
                     OverlayMsg::Thinking => {
                         ws.mode.set(WaveMode::Pulse);

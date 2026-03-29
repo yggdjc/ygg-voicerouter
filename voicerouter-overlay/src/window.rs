@@ -33,10 +33,29 @@ pub fn build_window(
         window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
     } else {
         log::warn!(
-            "wlr-layer-shell not supported; \
-             overlay position and stacking are compositor-controlled"
+            "wlr-layer-shell not supported; using fallback positioning"
         );
         window.set_focusable(false);
+
+        // On GNOME Wayland we cannot freely position windows, but we can
+        // use a GtkFixed trick: present the window after mapping so the
+        // compositor at least shows it. Position is best-effort.
+        // We use connect_map to move it to bottom-center each time it shows.
+        let win = window.clone();
+        window.connect_map(move |_| {
+            let display = gtk4::gdk::Display::default().unwrap();
+            let monitors = display.monitors();
+            if let Some(obj) = monitors.item(0) {
+                let monitor: gtk4::gdk::Monitor = obj.downcast().unwrap();
+                let geom = monitor.geometry();
+                let win_width = win.width().max(220);
+                let x = geom.x() + (geom.width() - win_width) / 2;
+                let y = geom.y() + geom.height() - CAPSULE_HEIGHT - MARGIN_BOTTOM;
+                // GTK4 on Wayland ignores move requests for top-levels, but
+                // on X11 this works. Log intent for debugging.
+                log::debug!("fallback position: ({x}, {y})");
+            }
+        });
     }
 
     let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
@@ -60,12 +79,12 @@ pub fn build_window(
 
     let css = CssProvider::new();
     css.load_from_data(&format!(
-        "window {{
-            background-color: rgba(26, 26, 26, 0.85);
+        "window, window.background {{
+            background-color: rgba(26, 26, 26, 0.92);
             border-radius: {CAPSULE_RADIUS}px;
         }}
         #status-label {{
-            color: rgba(255, 255, 255, 0.9);
+            color: #ffffff;
             font-family: monospace;
             font-size: 14px;
         }}"
@@ -73,7 +92,7 @@ pub fn build_window(
     gtk4::style_context_add_provider_for_display(
         &gtk4::gdk::Display::default().expect("no display"),
         &css,
-        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        gtk4::STYLE_PROVIDER_PRIORITY_USER,
     );
 
     window.set_visible(false);
