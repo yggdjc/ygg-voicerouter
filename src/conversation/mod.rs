@@ -10,6 +10,7 @@ use crate::asr::AsrEngine;
 use crate::audio_source::AudioChunk;
 use crate::config::Config;
 use crate::llm::{ChatMessage, LlmClient};
+use crate::overlay::{self, OverlayClient};
 use crate::vad::{VadConfig, VadDetector, VadEvent};
 
 use sentence::split_sentences;
@@ -68,6 +69,7 @@ impl Actor for ConversationActor {
 
         warmup_ping(&llm, self.config.conversation.llm_timeout_seconds);
 
+        let mut overlay = OverlayClient::new();
         let feedback = self.config.sound.feedback;
         let mut state = State::Idle;
         let mut session: Option<Session> = None;
@@ -89,6 +91,7 @@ impl Actor for ConversationActor {
                 &mut pending_sentences,
                 &outbox,
                 &self.config,
+                &mut overlay,
             );
             if result == ControlResult::Shutdown {
                 return;
@@ -99,7 +102,7 @@ impl Actor for ConversationActor {
                 State::Listening => {
                     if check_timeout(&session, &self.config) {
                         log::info!("[conversation] session timed out");
-                        end_session(&outbox, feedback);
+                        end_session(&outbox, feedback, &mut overlay);
                         reset_state(
                             &mut state,
                             &mut session,
@@ -126,6 +129,7 @@ impl Actor for ConversationActor {
                         &mut audio_buffer,
                         recording_start,
                         self.config.conversation.max_turn_seconds,
+                        &mut overlay,
                     );
                     if new_state == State::Transcribing && feedback {
                         crate::sound::beep_done().ok();
@@ -133,6 +137,7 @@ impl Actor for ConversationActor {
                     state = new_state;
                 }
                 State::Transcribing => {
+                    overlay.send_transcribing();
                     state = handle_transcribing(
                         &mut asr_engine,
                         &self.config,
@@ -140,10 +145,12 @@ impl Actor for ConversationActor {
                         &mut session,
                         &outbox,
                         &mut vad,
+                        &mut overlay,
                     );
                     audio_buffer.clear();
                 }
                 State::Thinking => {
+                    overlay.send_thinking();
                     state = handle_thinking(
                         &llm,
                         &self.config,
@@ -151,6 +158,7 @@ impl Actor for ConversationActor {
                         &mut pending_sentences,
                         &outbox,
                         &mut vad,
+                        &mut overlay,
                     );
                 }
                 State::Speaking => {
@@ -202,11 +210,12 @@ fn speak_reply(text: &str, outbox: &Sender<Message>) {
         .ok();
 }
 
-fn end_session(outbox: &Sender<Message>, feedback: bool) {
+fn end_session(outbox: &Sender<Message>, feedback: bool, overlay: &mut OverlayClient) {
     if feedback {
         crate::sound::beep_done().ok();
     }
     outbox.send(Message::UnmuteInput).ok();
+    overlay.send_idle();
 }
 
 fn end_conversation(
@@ -215,8 +224,9 @@ fn end_conversation(
     state: &mut State,
     session: &mut Option<Session>,
     vad: &mut Option<VadDetector>,
+    overlay: &mut OverlayClient,
 ) {
-    end_session(outbox, feedback);
+    end_session(outbox, feedback, overlay);
     *state = State::Idle;
     *session = None;
     *vad = None;
@@ -333,6 +343,7 @@ fn drain_control(
     pending_sentences: &mut usize,
     outbox: &Sender<Message>,
     config: &Config,
+    overlay: &mut OverlayClient,
 ) -> ControlResult {
     while let Ok(msg) = inbox.try_recv() {
         match msg {
@@ -345,13 +356,15 @@ fn drain_control(
                     log::info!(
                         "[conversation] starting session (wakeword={wakeword:?})"
                     );
-                    start_session(state, session, vad, config, outbox);
+                    start_session(state, session, vad, config, outbox, overlay);
                 }
             }
             Message::EndConversation | Message::StartListening { .. } => {
                 if *state != State::Idle {
                     log::info!("[conversation] ending session (reason: {msg:?})");
-                    end_conversation(outbox, config.sound.feedback, state, session, vad);
+                    end_conversation(
+                        outbox, config.sound.feedback, state, session, vad, overlay,
+                    );
                     *pending_sentences = 0;
                 }
             }
@@ -364,6 +377,7 @@ fn drain_control(
                         ) {
                             return result;
                         }
+                        overlay.send_recording(0);
                         *state = State::Listening;
                     }
                 }
@@ -380,6 +394,7 @@ fn start_session(
     vad: &mut Option<VadDetector>,
     config: &Config,
     outbox: &Sender<Message>,
+    overlay: &mut OverlayClient,
 ) {
     let conv = &config.conversation;
     *session = Some(Session::new(
@@ -394,6 +409,7 @@ fn start_session(
     if config.sound.feedback {
         crate::sound::beep_done().ok();
     }
+    overlay.send_recording(0);
     *state = State::Listening;
 }
 
@@ -447,6 +463,7 @@ fn process_audio_recording(
     audio_buffer: &mut Vec<f32>,
     recording_start: Instant,
     max_turn_seconds: f64,
+    overlay: &mut OverlayClient,
 ) -> State {
     let Some(vad) = vad else { return State::Listening };
 
@@ -458,6 +475,8 @@ fn process_audio_recording(
 
     match audio_rx.recv_timeout(Duration::from_millis(100)) {
         Ok(chunk) => {
+            let rms = crate::audio::compute_rms(&chunk);
+            overlay.send_recording(overlay::rms_to_level(rms));
             audio_buffer.extend_from_slice(&chunk);
             let events = vad.feed(&chunk);
             for event in events {
@@ -487,6 +506,7 @@ fn handle_transcribing(
     session: &mut Option<Session>,
     outbox: &Sender<Message>,
     vad: &mut Option<VadDetector>,
+    overlay: &mut OverlayClient,
 ) -> State {
     // Lazy-init ASR engine.
     if asr_engine.is_none() {
@@ -496,7 +516,7 @@ fn handle_transcribing(
             Err(e) => {
                 log::error!("[conversation] ASR init failed: {e:#}");
                 speak_text("语音识别初始化失败", outbox);
-                end_session(outbox, config.sound.feedback);
+                end_session(outbox, config.sound.feedback, overlay);
                 return State::Idle;
             }
         }
@@ -520,9 +540,10 @@ fn handle_transcribing(
     }
 
     log::info!("[conversation] transcript: {transcript:?}");
+    overlay.send_result(&transcript);
 
     return finalize_transcript(
-        &transcript, config, session, outbox, vad,
+        &transcript, config, session, outbox, vad, overlay,
     );
 }
 
@@ -532,6 +553,7 @@ fn finalize_transcript(
     session: &mut Option<Session>,
     outbox: &Sender<Message>,
     vad: &mut Option<VadDetector>,
+    overlay: &mut OverlayClient,
 ) -> State {
     let Some(ref mut sess) = session else {
         return State::Idle;
@@ -540,7 +562,9 @@ fn finalize_transcript(
     if sess.is_end_phrase(transcript) {
         log::info!("[conversation] end phrase detected");
         speak_text("好的，再见", outbox);
-        end_conversation(outbox, config.sound.feedback, &mut State::Idle, session, vad);
+        end_conversation(
+            outbox, config.sound.feedback, &mut State::Idle, session, vad, overlay,
+        );
         return State::Idle;
     }
 
@@ -555,6 +579,7 @@ fn handle_thinking(
     pending_sentences: &mut usize,
     outbox: &Sender<Message>,
     vad: &mut Option<VadDetector>,
+    overlay: &mut OverlayClient,
 ) -> State {
     let Some(ref mut sess) = session else {
         return State::Idle;
@@ -576,7 +601,9 @@ fn handle_thinking(
             log::error!("[conversation] LLM failed after retry: {e:#}");
             speak_text("抱歉，我暂时无法回答", outbox);
             let mut s = State::Idle;
-            end_conversation(outbox, config.sound.feedback, &mut s, session, vad);
+            end_conversation(
+                outbox, config.sound.feedback, &mut s, session, vad, overlay,
+            );
             return State::Idle;
         }
     };
