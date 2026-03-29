@@ -23,11 +23,21 @@ pub fn build_window(
         .resizable(false)
         .build();
 
-    window.init_layer_shell();
-    window.set_layer(gtk4_layer_shell::Layer::Overlay);
-    window.set_anchor(gtk4_layer_shell::Edge::Bottom, true);
-    window.set_margin(gtk4_layer_shell::Edge::Bottom, MARGIN_BOTTOM);
-    window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
+    let use_layer_shell = gtk4_layer_shell::is_supported();
+
+    if use_layer_shell {
+        window.init_layer_shell();
+        window.set_layer(gtk4_layer_shell::Layer::Overlay);
+        window.set_anchor(gtk4_layer_shell::Edge::Bottom, true);
+        window.set_margin(gtk4_layer_shell::Edge::Bottom, MARGIN_BOTTOM);
+        window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
+    } else {
+        log::warn!(
+            "wlr-layer-shell not supported; \
+             overlay position and stacking are compositor-controlled"
+        );
+        window.set_focusable(false);
+    }
 
     let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
     hbox.set_margin_start(12);
