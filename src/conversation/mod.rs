@@ -630,6 +630,7 @@ fn handle_thinking(
     }
 
     *pending_sentences = sentences.len();
+    log::info!("[conversation] overlay: sending speaking state");
     overlay.send_speaking(&reply);
     for sentence in &sentences {
         speak_reply(sentence, outbox);

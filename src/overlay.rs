@@ -42,15 +42,19 @@ impl OverlayClient {
 
     fn send_raw(&mut self, json: &str) {
         if self.stream.is_none() {
-            self.stream = UnixStream::connect(&self.path).ok();
-            if self.stream.is_none() {
-                return;
+            match UnixStream::connect(&self.path) {
+                Ok(s) => self.stream = Some(s),
+                Err(_) => {
+                    log::debug!("overlay: socket not available");
+                    return;
+                }
             }
         }
 
         let msg = format!("{json}\n");
         if let Some(ref mut s) = self.stream {
             if s.write_all(msg.as_bytes()).is_err() {
+                log::debug!("overlay: write failed, dropping connection");
                 self.stream = None;
             }
         }
