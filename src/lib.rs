@@ -18,3 +18,4 @@ pub mod continuous;
 pub mod llm;
 pub mod conversation;
 pub mod vad;
+pub mod overlay;
