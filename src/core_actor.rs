@@ -10,6 +10,7 @@ use crate::asr::AsrEngine;
 use crate::audio::{self, NoiseTracker};
 use crate::audio_source::AudioChunk;
 use crate::config::Config;
+use crate::overlay::{self, OverlayClient};
 use crate::postprocess::postprocess;
 use crate::sound;
 
@@ -132,6 +133,7 @@ impl Actor for CoreActor {
         // Cooldown after finalize to let inject complete before wakeword retriggers.
         let mut cooldown_until: Option<Instant> = None;
         let mut active_wakeword: Option<String> = None;
+        let mut overlay = OverlayClient::new();
 
         log::info!("[core] ready");
 
@@ -170,6 +172,7 @@ impl Actor for CoreActor {
 
                                 // Update silence tracking from latest chunk RMS.
                                 let rms = audio::compute_rms(&chunk);
+                                overlay.send_recording(overlay::rms_to_level(rms));
                                 if rms >= silence_threshold {
                                     speech_detected = true;
                                     silence_since = None;
@@ -205,6 +208,7 @@ impl Actor for CoreActor {
                                         &mut asr_engine, &mut punctuator,
                                         &self.config, &outbox, elapsed,
                                         &mut noise_tracker, &active_wakeword,
+                                        &mut overlay,
                                     );
                                     recording_buffer.clear();
                                     recording_start = None;
@@ -232,6 +236,7 @@ impl Actor for CoreActor {
                                     &mut asr_engine, &mut punctuator,
                                     &self.config, &outbox, elapsed,
                                     &mut noise_tracker, &active_wakeword,
+                                    &mut overlay,
                                 );
                                 recording_buffer.clear();
                                 silence_since = None;
@@ -290,16 +295,20 @@ fn finalize_recording(
     elapsed: f32,
     noise_tracker: &mut NoiseTracker,
     wakeword: &Option<String>,
+    overlay: &mut OverlayClient,
 ) {
     log::info!("[core] recording stopped ({elapsed:.1}s)");
     beep_if(config, sound::beep_done);
+    overlay.send_transcribing();
 
     if samples.is_empty() {
+        overlay.send_idle();
         return;
     }
 
     if elapsed < MIN_RECORDING_SECS {
         log::info!("[core] too short ({elapsed:.1}s), discarding");
+        overlay.send_idle();
         return;
     }
 
@@ -317,6 +326,7 @@ fn finalize_recording(
         log::info!(
             "[core] silence (peak {peak:.4} < {threshold:.4}), discarding"
         );
+        overlay.send_idle();
         return;
     }
 
@@ -328,6 +338,7 @@ fn finalize_recording(
             Err(e) => {
                 log::error!("[core] ASR init failed: {e:#}");
                 beep_if(config, sound::beep_error);
+                overlay.send_idle();
                 return;
             }
         }
@@ -345,16 +356,21 @@ fn finalize_recording(
             log::warn!("[core] GPU transcription returned empty, retrying with CPU");
             match cpu_fallback_transcribe(&samples, config) {
                 Some(t) => t,
-                None => return,
+                None => {
+                    overlay.send_idle();
+                    return;
+                }
             }
         }
         Ok(_) => {
             log::info!("[core] transcribed: (empty)");
+            overlay.send_idle();
             return;
         }
         Err(e) => {
             log::error!("[core] transcription failed: {e:#}");
             beep_if(config, sound::beep_error);
+            overlay.send_idle();
             return;
         }
     };
@@ -377,10 +393,12 @@ fn finalize_recording(
 
     if text.is_empty() {
         log::info!("[core] transcribed: (only wakeword, no content)");
+        overlay.send_idle();
         return;
     }
 
     log::info!("[core] transcribed: {text:?}");
+    overlay.send_result(&text);
     outbox.send(Message::Transcript { text, raw }).ok();
 }
 
