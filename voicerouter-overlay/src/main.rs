@@ -59,6 +59,17 @@ fn main() {
                         l.set_opacity(0.70);
                         w.set_visible(true);
                     }
+                    OverlayMsg::Speaking { ref text } => {
+                        ws.color.set(BarColor::SPEAKING);
+                        ws.mode.set(WaveMode::Pulse);
+                        if text.is_empty() {
+                            l.set_text("Speaking...");
+                        } else {
+                            l.set_text(text);
+                        }
+                        l.set_opacity(0.85);
+                        w.set_visible(true);
+                    }
                     OverlayMsg::Idle => {
                         ws.mode.set(WaveMode::Off);
                         w.set_visible(false);

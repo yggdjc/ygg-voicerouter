@@ -80,6 +80,12 @@ impl OverlayClient {
         self.send_raw(r#"{"state":"thinking"}"#);
     }
 
+    pub fn send_speaking(&mut self, text: &str) {
+        self.last_level = u8::MAX;
+        let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+        self.send_raw(&format!(r#"{{"state":"speaking","text":"{escaped}"}}"#));
+    }
+
     pub fn send_idle(&mut self) {
         self.last_level = u8::MAX;
         self.send_raw(r#"{"state":"idle"}"#);

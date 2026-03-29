@@ -17,6 +17,8 @@ pub enum OverlayMsg {
     Result { text: String },
     #[serde(rename = "thinking")]
     Thinking,
+    #[serde(rename = "speaking")]
+    Speaking { #[serde(default)] text: String },
     #[serde(rename = "idle")]
     Idle,
 }
@@ -57,5 +59,15 @@ mod tests {
     fn parse_transcribing() {
         let msg: OverlayMsg = serde_json::from_str(r#"{"state":"transcribing"}"#).unwrap();
         assert!(matches!(msg, OverlayMsg::Transcribing));
+    }
+
+    #[test]
+    fn parse_speaking() {
+        let msg: OverlayMsg = serde_json::from_str(r#"{"state":"speaking","text":"你好"}"#).unwrap();
+        if let OverlayMsg::Speaking { text } = msg {
+            assert_eq!(text, "你好");
+        } else {
+            panic!("expected Speaking");
+        }
     }
 }

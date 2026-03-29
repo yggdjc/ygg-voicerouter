@@ -48,6 +48,8 @@ impl BarColor {
     pub const RECORDING: Self = Self { r: 0.231, g: 0.510, b: 0.965, a: 0.90 };
     /// Purple-600: thinking/processing state.
     pub const THINKING: Self = Self { r: 0.576, g: 0.200, b: 0.918, a: 0.80 };
+    /// Emerald-500: speaking/TTS state.
+    pub const SPEAKING: Self = Self { r: 0.063, g: 0.725, b: 0.506, a: 0.85 };
     /// Default white (fallback).
     pub const DEFAULT: Self = Self { r: 1.0, g: 1.0, b: 1.0, a: 0.9 };
 }

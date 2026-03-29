@@ -630,6 +630,7 @@ fn handle_thinking(
     }
 
     *pending_sentences = sentences.len();
+    overlay.send_speaking(&reply);
     for sentence in &sentences {
         speak_reply(sentence, outbox);
     }
