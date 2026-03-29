@@ -560,7 +560,7 @@ fn finalize_transcript(
 
     if sess.is_end_phrase(transcript) {
         log::info!("[conversation] end phrase detected");
-        speak_text("好的，再见", outbox);
+        speak_text("好的", outbox);
         end_conversation(
             outbox, config.sound.feedback, &mut State::Idle, session, vad, overlay,
         );
