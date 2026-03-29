@@ -58,8 +58,8 @@ fn install() -> Result<()> {
         let overlay_unit_content = format!(
             "[Unit]\n\
              Description=voicerouter-overlay — visual feedback overlay\n\
-             After=graphical-session.target voicerouter.service\n\
-             PartOf=voicerouter.service\n\
+             BindsTo=voicerouter.service\n\
+             After=voicerouter.service\n\
              \n\
              [Service]\n\
              Type=simple\n\
@@ -68,7 +68,7 @@ fn install() -> Result<()> {
              RestartSec=3\n\
              \n\
              [Install]\n\
-             WantedBy=default.target\n",
+             WantedBy=voicerouter.service\n",
             binary = overlay_binary.display(),
         );
 
