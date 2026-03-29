@@ -299,7 +299,10 @@ fn finalize_recording(
 ) {
     log::info!("[core] recording stopped ({elapsed:.1}s)");
     beep_if(config, sound::beep_done);
-    overlay.send_transcribing();
+    // Dismiss overlay immediately when recording stops so focus returns
+    // to the target window before inject. On GNOME Wayland the overlay
+    // steals focus, which breaks Ctrl+V paste.
+    overlay.send_idle();
 
     if samples.is_empty() {
         overlay.send_idle();
@@ -398,7 +401,8 @@ fn finalize_recording(
     }
 
     log::info!("[core] transcribed: {text:?}");
-    overlay.send_result(&text);
+    // Dismiss overlay BEFORE inject so focus returns to the target window.
+    overlay.send_idle();
     outbox.send(Message::Transcript { text, raw }).ok();
 }
 

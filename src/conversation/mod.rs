@@ -540,7 +540,6 @@ fn handle_transcribing(
     }
 
     log::info!("[conversation] transcript: {transcript:?}");
-    overlay.send_result(&transcript);
 
     return finalize_transcript(
         &transcript, config, session, outbox, vad, overlay,

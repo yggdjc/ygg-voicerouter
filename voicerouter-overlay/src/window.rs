@@ -33,32 +33,17 @@ pub fn build_window(
         window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
     } else {
         log::warn!(
-            "wlr-layer-shell not supported; using fallback positioning"
+            "wlr-layer-shell not supported (GNOME); \
+             window position is compositor-controlled, focus may be grabbed"
         );
+        // Prevent keyboard focus grab as much as possible.
         window.set_focusable(false);
-
-        // On GNOME Wayland we cannot freely position windows, but we can
-        // use a GtkFixed trick: present the window after mapping so the
-        // compositor at least shows it. Position is best-effort.
-        // We use connect_map to move it to bottom-center each time it shows.
-        let win = window.clone();
-        window.connect_map(move |_| {
-            let display = gtk4::gdk::Display::default().unwrap();
-            let monitors = display.monitors();
-            if let Some(obj) = monitors.item(0) {
-                let monitor: gtk4::gdk::Monitor = obj.downcast().unwrap();
-                let geom = monitor.geometry();
-                let win_width = win.width().max(220);
-                let x = geom.x() + (geom.width() - win_width) / 2;
-                let y = geom.y() + geom.height() - CAPSULE_HEIGHT - MARGIN_BOTTOM;
-                // GTK4 on Wayland ignores move requests for top-levels, but
-                // on X11 this works. Log intent for debugging.
-                log::debug!("fallback position: ({x}, {y})");
-            }
-        });
+        window.set_can_focus(false);
+        window.set_focus_on_click(false);
     }
 
     let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
+    hbox.set_widget_name("overlay-box");
     hbox.set_margin_start(12);
     hbox.set_margin_end(16);
     hbox.set_valign(gtk4::Align::Center);
@@ -77,18 +62,23 @@ pub fn build_window(
 
     window.set_child(Some(&hbox));
 
+    // CSS: semi-transparent dark gray background, white text.
+    // Use !important to override GNOME themes that force opaque backgrounds.
     let css = CssProvider::new();
-    css.load_from_data(&format!(
-        "window, window.background {{
-            background-color: rgba(26, 26, 26, 0.92);
-            border-radius: {CAPSULE_RADIUS}px;
-        }}
-        #status-label {{
-            color: #ffffff;
-            font-family: monospace;
-            font-size: 14px;
-        }}"
-    ));
+    css.load_from_data(
+        "window, window.background, window.solid-csd, .background { \
+             background-color: transparent !important; \
+         } \
+         #overlay-box { \
+             background-color: rgba(40, 40, 40, 0.80); \
+             border-radius: 28px; \
+         } \
+         #status-label { \
+             color: #ffffff; \
+             font-family: monospace; \
+             font-size: 14px; \
+         }",
+    );
     gtk4::style_context_add_provider_for_display(
         &gtk4::gdk::Display::default().expect("no display"),
         &css,
