@@ -50,8 +50,11 @@ impl Session {
     }
 
     pub fn is_end_phrase(&self, text: &str) -> bool {
-        let trimmed = text.trim();
-        self.end_phrases.iter().any(|p| trimmed == p)
+        // Strip punctuation for fuzzy matching — ASR may output "结束。" or "再见！"
+        let cleaned: String = text.trim().chars()
+            .filter(|c| !matches!(c, '。' | '！' | '？' | '，' | '.' | '!' | '?' | ',' | ' '))
+            .collect();
+        self.end_phrases.iter().any(|p| cleaned == *p || cleaned.contains(p.as_str()))
     }
 
     pub fn is_timed_out(&self, timeout_secs: f64) -> bool {
@@ -95,6 +98,20 @@ mod tests {
         assert!(s.is_end_phrase("结束"));
         assert!(s.is_end_phrase("再见"));
         assert!(!s.is_end_phrase("继续"));
+    }
+
+    #[test]
+    fn end_phrase_with_punctuation() {
+        let s = Session::new("sys".into(), vec!["结束".into(), "再见".into()]);
+        assert!(s.is_end_phrase("结束。"));
+        assert!(s.is_end_phrase("再见！"));
+        assert!(s.is_end_phrase("再见."));
+    }
+
+    #[test]
+    fn end_phrase_contains() {
+        let s = Session::new("sys".into(), vec!["再见".into()]);
+        assert!(s.is_end_phrase("好的再见"));
     }
 
     #[test]
