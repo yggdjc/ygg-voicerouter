@@ -1,8 +1,10 @@
 //! voicerouter-overlay — visual feedback overlay for voicerouter daemon.
 
-use gtk4::prelude::*;
-
 mod protocol;
+mod waveform;
+mod window;
+
+use gtk4::prelude::*;
 
 fn main() {
     env_logger::Builder::from_env(
@@ -16,8 +18,10 @@ fn main() {
         .application_id("com.voicerouter.overlay")
         .build();
 
-    app.connect_activate(|_app| {
-        log::info!("GTK activated (window creation in later task)");
+    app.connect_activate(|app| {
+        let (window, _label, _wave_state) = window::build_window(app);
+        window.set_visible(true);
+        log::info!("overlay window created");
     });
 
     app.run();
