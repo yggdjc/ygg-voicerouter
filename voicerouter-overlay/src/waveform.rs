@@ -44,14 +44,14 @@ pub struct BarColor {
 }
 
 impl BarColor {
-    /// Blue-500: recording state.
-    pub const RECORDING: Self = Self { r: 0.231, g: 0.510, b: 0.965, a: 0.90 };
+    /// Blue-600: recording state (on light bg).
+    pub const RECORDING: Self = Self { r: 0.145, g: 0.388, b: 0.922, a: 0.85 };
     /// Purple-600: thinking/processing state.
-    pub const THINKING: Self = Self { r: 0.576, g: 0.200, b: 0.918, a: 0.80 };
-    /// Emerald-500: speaking/TTS state.
-    pub const SPEAKING: Self = Self { r: 0.063, g: 0.725, b: 0.506, a: 0.85 };
-    /// Default white (fallback).
-    pub const DEFAULT: Self = Self { r: 1.0, g: 1.0, b: 1.0, a: 0.9 };
+    pub const THINKING: Self = Self { r: 0.486, g: 0.157, b: 0.847, a: 0.75 };
+    /// Emerald-600: speaking/TTS state.
+    pub const SPEAKING: Self = Self { r: 0.020, g: 0.600, b: 0.420, a: 0.80 };
+    /// Slate-400: default fallback.
+    pub const DEFAULT: Self = Self { r: 0.58, g: 0.60, b: 0.65, a: 0.7 };
 }
 
 pub struct WaveformState {

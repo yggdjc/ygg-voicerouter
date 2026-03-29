@@ -75,16 +75,17 @@ pub fn build_window(
     let css = CssProvider::new();
     css.load_from_data(
         "#overlay-box { \
-             background-color: rgba(24, 24, 27, 0.82); \
+             background-color: rgba(255, 255, 255, 0.88); \
              border-radius: 28px; \
              padding: 14px 20px 14px 14px; \
-             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.30), \
-                         0 2px 8px rgba(0, 0, 0, 0.20); \
+             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12), \
+                         0 2px 8px rgba(0, 0, 0, 0.08); \
          } \
          #status-label { \
-             color: rgba(250, 250, 250, 0.92); \
+             color: rgba(30, 30, 36, 0.88); \
              font-family: sans-serif; \
              font-size: 14px; \
+             font-weight: 500; \
          }",
     );
     gtk4::style_context_add_provider_for_display(
