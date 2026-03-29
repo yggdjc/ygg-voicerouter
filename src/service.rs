@@ -29,6 +29,16 @@ fn install() -> Result<()> {
 
     let binary =
         std::env::current_exe().context("cannot determine binary path")?;
+    let lib_dir = binary.parent().map(|p| p.join("deps"));
+    let env_line = if let Some(ref dir) = lib_dir {
+        if dir.exists() {
+            format!("Environment=LD_LIBRARY_PATH={}\n", dir.display())
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
     let unit_content = format!(
         "[Unit]\n\
          Description=voicerouter — offline voice router\n\
@@ -37,6 +47,7 @@ fn install() -> Result<()> {
          [Service]\n\
          Type=simple\n\
          ExecStart={binary}\n\
+         {env_line}\
          Restart=on-failure\n\
          RestartSec=5\n\
          \n\
