@@ -80,6 +80,42 @@ Note: Wakeword ASR forced to CPU due to CUDA Paraformer tensor shape bug with sh
 
 **Paraformer-zh with CUDA** for production use. GPU acceleration cuts end-to-end latency by ~50% with minimal VRAM cost (630 MiB / 8 GB). FunASR Nano's LLM-based decoder introduces hallucination risk that is unacceptable for a voice input method.
 
+## LLM Benchmark (Conversation Mode)
+
+**Model:** qwen2.5:7b (Q4_K_M, 4.6 GB) via local Ollama
+**VRAM:** ~4.9 GB (fully GPU-offloaded)
+**Context:** 4096 tokens
+
+### Response Latency
+
+| Prompt | Tokens | Latency | Notes |
+|--------|--------|---------|-------|
+| 今天天气怎么样 | 51 | ~2.4s | Cold (first request after idle) |
+| 说个笑话 | 54 | ~0.35s | Warm |
+| 什么是量子计算 | 70 | ~0.63s | Warm |
+| 推荐一本书 | 56 | ~0.38s | Warm |
+
+Cold start adds ~2s for KV cache initialization. Warm requests complete in 0.3–0.7s for short replies (2 sentences).
+
+### Resource Usage (Ollama + voicerouter combined)
+
+| Component | VRAM | RAM |
+|-----------|------|-----|
+| Ollama (qwen2.5:7b) | ~4.9 GB | ~500 MB |
+| voicerouter (Paraformer + TTS + ct-punc) | ~630 MiB | ~1.5 GB |
+| **Total** | **~5.5 GB / 8 GB** | **~2.0 GB** |
+
+### Model Comparison (tested on this hardware)
+
+| Model | Quant | VRAM | Warm latency | Quality |
+|-------|-------|------|-------------|---------|
+| qwen2.5:7b | Q4_K_M | 4.9 GB | 0.3–0.7s | Good — concise, follows system prompt |
+| qwen3.5:4b | Q4_K_M | ~3 GB | 11–30s | Poor — thinking model, too slow for voice |
+
+**Recommendation:** qwen2.5:7b for voice conversation. Non-thinking models are essential for low-latency voice interaction. Thinking models (qwen3.5) add 10–30s overhead that is unacceptable for real-time conversation.
+
+---
+
 ## Models Not Tested
 
 | Model | Reason |
