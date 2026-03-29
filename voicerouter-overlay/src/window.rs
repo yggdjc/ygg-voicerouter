@@ -42,11 +42,17 @@ pub fn build_window(
         window.set_focus_on_click(false);
     }
 
+    // Outer container provides margin so box-shadow is not clipped.
+    let outer = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    outer.set_margin_start(16);
+    outer.set_margin_end(16);
+    outer.set_margin_top(16);
+    outer.set_margin_bottom(16);
+
     let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
     hbox.set_widget_name("overlay-box");
-    hbox.set_margin_start(12);
-    hbox.set_margin_end(16);
     hbox.set_valign(gtk4::Align::Center);
+    outer.append(&hbox);
 
     let wave_state = Rc::new(WaveformState::new());
     let waveform_area = waveform::create_waveform_widget(&wave_state);
@@ -60,22 +66,23 @@ pub fn build_window(
     label.set_max_width_chars(60);
     hbox.append(&label);
 
-    window.set_child(Some(&hbox));
+    window.set_child(Some(&outer));
 
-    // CSS: semi-transparent dark gray background, white text.
-    // Use !important to override GNOME themes that force opaque backgrounds.
+    // Remove GNOME's "background" CSS class — it forces an opaque theme
+    // color that cannot be overridden by CSS alone.
+    window.remove_css_class("background");
+
     let css = CssProvider::new();
     css.load_from_data(
-        "window, window.background, window.solid-csd, .background { \
-             background-color: transparent !important; \
-         } \
-         #overlay-box { \
+        "#overlay-box { \
              background-color: rgba(40, 40, 40, 0.80); \
              border-radius: 28px; \
+             padding: 12px 16px 12px 12px; \
+             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4); \
          } \
          #status-label { \
              color: #ffffff; \
-             font-family: monospace; \
+             font-family: sans-serif; \
              font-size: 14px; \
          }",
     );
