@@ -1,6 +1,6 @@
 # voicerouter
 
-**Voice interaction framework for Linux** — offline speech recognition with actor-based architecture, composable pipeline, IPC, and extensible handlers. Single binary, CPU-only.
+**Voice interaction framework for Linux** — offline speech recognition with actor-based architecture, composable pipeline, IPC, and extensible handlers. CPU-only.
 
 [中文文档](README_zh.md)
 
@@ -19,6 +19,7 @@
 - **Text injection** to any focused window (Wayland + X11)
 - **Bilingual** — Chinese-English mixed recognition
 - **Audio feedback** — beep on recording start/stop
+- **Visual overlay** — GTK4 capsule HUD with waveform animation (separate `voicerouter-overlay` binary)
 - **systemd service** — auto-start on login
 
 ## Quick Start
@@ -31,11 +32,15 @@ git clone https://github.com/user/ygg-voicerouter.git
 cd ygg-voicerouter
 cargo build --release
 
+# Build overlay (optional, requires libgtk-4-dev libgtk4-layer-shell-dev)
+cd voicerouter-overlay && cargo build --release && cd ..
+
 # Download models
 voicerouter setup
 
 # Run
 voicerouter --preload
+voicerouter-overlay    # optional: visual feedback overlay
 ```
 
 Press **Right Alt** to record, release to transcribe. Text is injected into the focused window.
@@ -207,6 +212,7 @@ voicerouter download [model]     # download model files
 voicerouter service install      # install systemd user service
 voicerouter service start        # start service
 voicerouter service status       # check status
+voicerouter-overlay              # start visual overlay (separate binary)
 ```
 
 ## Architecture
@@ -224,7 +230,10 @@ Actor-based architecture with central message bus:
 │  Actor   │     │          │     │   Actor       │     │  Actor   │
 │(audio+ASR│     └──────────┘     └──────────────┘     └──────────┘
 │+postproc)│
-└──────────┘
+└────┬─────┘                  ┌──────────────────────────────────┐
+     │ Unix socket            │ voicerouter-overlay (separate    │
+     └───────────────────────▶│ process, GTK4 capsule HUD)       │
+                              └──────────────────────────────────┘
 ```
 
 Each actor runs on its own thread. The Bus routes typed `Message` enums via topic-based 1:N subscriptions.
@@ -261,13 +270,30 @@ src/
 │   ├── english_fix.rs   # Broken English token repair
 │   └── punctuation.rs   # Punctuation handling
 ├── audio_source.rs      # Shared cpal audio stream (broadcasts to Core + Wakeword)
+├── overlay.rs           # Overlay client (fire-and-forget socket IPC to overlay process)
 ├── tts/                 # Text-to-speech
 │   ├── mod.rs           # TtsActor, TtsEngine trait, cpal playback
 │   └── sherpa.rs        # Kokoro v1.1 TTS via sherpa-onnx OfflineTts
 ├── wakeword/            # Wake word detection
 │   ├── mod.rs           # WakewordActor
 │   └── detector.rs      # Phrase prefix matching
+├── conversation/        # Multi-turn voice conversation (LLM)
+│   ├── mod.rs           # ConversationActor state machine
+│   ├── session.rs       # Chat session and history management
+│   └── sentence.rs      # Sentence splitting for TTS
+├── continuous/          # Always-on intent classification
+├── vad/                 # Voice activity detection (energy-based)
+├── llm/                 # LLM client (OpenAI-compatible API)
 └── sound.rs             # Audio feedback (beeps)
+
+voicerouter-overlay/         # Separate crate: visual feedback overlay
+├── Cargo.toml
+└── src/
+    ├── main.rs              # GTK4 app + socket message dispatch
+    ├── protocol.rs          # JSON message types
+    ├── window.rs            # Capsule window (GTK4 + layer-shell)
+    ├── waveform.rs          # 5-bar animated waveform widget
+    └── controller.rs        # Unix socket listener
 ```
 
 ## Known Limitations
@@ -276,6 +302,7 @@ src/
 - RNNoise denoising may be too aggressive; keep `denoise = false` unless needed
 - `wtype` unavailable on GNOME Wayland (auto-falls back to clipboard-paste)
 - TTS requires Kokoro model download (~500 MB)
+- Overlay on GNOME Wayland: no layer-shell support, window position is compositor-controlled and may steal focus briefly during recording
 
 ## License
 

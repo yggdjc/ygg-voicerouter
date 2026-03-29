@@ -116,6 +116,19 @@ install_binary() {
 
     log_success "Installed to ${INSTALL_DIR}/voicerouter"
 
+    # Install overlay binary if present in the same release
+    local overlay_file="${temp_file}-overlay"
+    local overlay_name="voicerouter-overlay-${version}-${arch}-unknown-linux-gnu"
+    local overlay_url="${GITHUB_BASE}/releases/download/${version}/${overlay_name}"
+    if curl -fsSL -o "$overlay_file" "$overlay_url" 2>/dev/null; then
+        cp "$overlay_file" "${INSTALL_DIR}/voicerouter-overlay"
+        chmod +x "${INSTALL_DIR}/voicerouter-overlay"
+        log_success "Installed overlay to ${INSTALL_DIR}/voicerouter-overlay"
+        rm -f "$overlay_file"
+    else
+        log_info "Overlay binary not found in release (optional — build from source with GTK4)"
+    fi
+
     # Check if in PATH
     if ! command -v voicerouter &> /dev/null; then
         log_warn "voicerouter is not in your PATH"

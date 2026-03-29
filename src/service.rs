@@ -4,6 +4,8 @@ use anyhow::{Context, Result};
 
 const SERVICE_NAME: &str = "voicerouter";
 const SERVICE_UNIT: &str = "voicerouter.service";
+const OVERLAY_SERVICE_NAME: &str = "voicerouter-overlay";
+const OVERLAY_SERVICE_UNIT: &str = "voicerouter-overlay.service";
 
 pub fn run(action: &str) -> Result<()> {
     match action {
@@ -50,6 +52,34 @@ fn install() -> Result<()> {
 
     println!("Installed: {}", unit_path.display());
 
+    // Install overlay service if the overlay binary exists alongside the daemon.
+    let overlay_binary = binary.with_file_name("voicerouter-overlay");
+    if overlay_binary.exists() {
+        let overlay_unit_content = format!(
+            "[Unit]\n\
+             Description=voicerouter-overlay — visual feedback overlay\n\
+             After=graphical-session.target voicerouter.service\n\
+             PartOf=voicerouter.service\n\
+             \n\
+             [Service]\n\
+             Type=simple\n\
+             ExecStart={binary}\n\
+             Restart=on-failure\n\
+             RestartSec=3\n\
+             \n\
+             [Install]\n\
+             WantedBy=default.target\n",
+            binary = overlay_binary.display(),
+        );
+
+        let overlay_unit_path = unit_dir.join(OVERLAY_SERVICE_UNIT);
+        std::fs::write(&overlay_unit_path, &overlay_unit_content).with_context(|| {
+            format!("writing overlay service file: {}", overlay_unit_path.display())
+        })?;
+        println!("Installed: {}", overlay_unit_path.display());
+        run_systemctl(&["--user", "enable", OVERLAY_SERVICE_NAME])?;
+    }
+
     run_systemctl(&["--user", "daemon-reload"])?;
     run_systemctl(&["--user", "enable", SERVICE_NAME])?;
     println!("Service enabled. Use `voicerouter service start` to start.");
@@ -57,6 +87,15 @@ fn install() -> Result<()> {
 }
 
 fn uninstall() -> Result<()> {
+    // Stop and remove overlay service first.
+    let _ = run_systemctl(&["--user", "stop", OVERLAY_SERVICE_NAME]);
+    let _ = run_systemctl(&["--user", "disable", OVERLAY_SERVICE_NAME]);
+    let overlay_unit_path = unit_dir()?.join(OVERLAY_SERVICE_UNIT);
+    if overlay_unit_path.exists() {
+        std::fs::remove_file(&overlay_unit_path).ok();
+        println!("Removed: {}", overlay_unit_path.display());
+    }
+
     let _ = run_systemctl(&["--user", "stop", SERVICE_NAME]);
     let _ = run_systemctl(&["--user", "disable", SERVICE_NAME]);
 
