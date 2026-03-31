@@ -24,6 +24,15 @@ denoise = true
 model = "paraformer-zh"
 model_dir = "~/.cache/voicerouter/models"
 
+[asr.cloud]
+enabled = false                # enable cloud ASR (DashScope Qwen3-ASR-Flash-Realtime)
+endpoint = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+model = "qwen3-asr-flash-realtime"
+api_key_env = "DASHSCOPE_API_KEY"     # env var holding the API key
+language = "zh"                       # language hint (zh, en, ja, etc.)
+# Cloud ASR is tried first; falls back to local on failure.
+# Punctuation from cloud ASR is preserved; local ct-punc is skipped.
+
 [postprocess]
 # "strip_trailing", "keep", or "replace_space"
 punct_mode = "strip_trailing"

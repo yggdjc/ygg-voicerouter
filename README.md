@@ -6,7 +6,7 @@
 
 ## Features
 
-- **Offline ASR** via [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — Paraformer (default) or FunASR Nano
+- **Offline ASR** via [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — Paraformer (default) or FunASR Nano; optional **cloud ASR** via DashScope Qwen3-ASR-Flash-Realtime with local fallback
 - **Actor architecture** — each component runs on its own thread with message-passing via central bus
 - **Composable pipeline** — chain handlers with conditions, or build DAG workflows with fan-out
 - **Built-in handlers** — inject (type text), shell (run commands), pipe (stdin/stdout), http (API calls), transform (regex/template), speak (TTS output)
@@ -65,6 +65,25 @@ hold_delay = 0.3        # auto mode long-press threshold (seconds)
 model = "paraformer-zh"   # paraformer-zh | funasr-nano | whisper-tiny-en | whisper-base-en
 model_dir = "~/.cache/voicerouter/models"
 ```
+
+#### Cloud ASR (optional)
+
+DashScope Qwen3-ASR-Flash-Realtime is a real-time streaming cloud ASR service. When enabled, it is tried first; local ASR is used as a fallback on connection failure. Cloud ASR returns punctuated text, so `restore_punctuation` (ct-punc) is skipped.
+
+Setup:
+1. Export your API key: `export DASHSCOPE_API_KEY=your-key-here`
+2. Enable in config:
+
+```toml
+[asr.cloud]
+enabled = true
+endpoint = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+model = "qwen3-asr-flash-realtime"
+api_key_env = "DASHSCOPE_API_KEY"
+language = "zh"   # zh | en | ja | etc.
+```
+
+The local model download is still required for fallback.
 
 ### Post-processing
 

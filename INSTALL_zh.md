@@ -148,6 +148,35 @@ model = "funasr-nano"   # 切换到 FunASR Nano
 
 可用模型：`paraformer-zh`（默认）、`funasr-nano`、`whisper-tiny-en`、`whisper-base-en`。
 
+## 云端 ASR 配置（可选）
+
+DashScope Qwen3-ASR-Flash-Realtime 通过云端提供更高精度的实时流式识别。每次说话时优先使用云端，连接失败时自动回退到本地模型。
+
+**前提条件**：在 [dashscope.aliyun.com](https://dashscope.aliyun.com) 开通 DashScope 账号并获取 API Key。
+
+**第一步——设置 API Key 环境变量：**
+
+```bash
+export DASHSCOPE_API_KEY=你的密钥
+```
+
+将此行加入 `~/.bashrc` 或 `~/.zshrc` 使其永久生效。
+
+**第二步——修改配置文件：**
+
+编辑 `~/.config/voicerouter/config.toml`：
+
+```toml
+[asr.cloud]
+enabled = true
+endpoint = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+model = "qwen3-asr-flash-realtime"
+api_key_env = "DASHSCOPE_API_KEY"
+language = "zh"   # zh | en | ja 等
+```
+
+**注意**：第 3 节的本地模型仍需下载，在云端不可用时作为回退。云端 ASR 返回结果自带标点，`ct-punc` 后处理步骤将被自动跳过。
+
 ## 常见问题
 
 ### 麦克风无声音

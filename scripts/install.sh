@@ -170,6 +170,15 @@ download_model_prompt() {
             log_info "  3. Extract to: ${MODEL_DIR}"
             ;;
     esac
+
+    echo ""
+    log_info "Tip: cloud ASR is available as an alternative to local models."
+    log_info "  DashScope Qwen3-ASR-Flash-Realtime offers streaming recognition with automatic"
+    log_info "  fallback to local when offline. To enable, set DASHSCOPE_API_KEY and add:"
+    log_info "    [asr.cloud]"
+    log_info "    enabled = true"
+    log_info "  to ~/.config/voicerouter/config.toml (see INSTALL.md for full setup)."
+    log_info "  A local model download is still recommended for offline fallback."
 }
 
 # Download model (placeholder)

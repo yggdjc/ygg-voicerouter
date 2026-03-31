@@ -148,6 +148,35 @@ model = "funasr-nano"   # switch to FunASR Nano
 
 Available models: `paraformer-zh` (default), `funasr-nano`, `whisper-tiny-en`, `whisper-base-en`.
 
+## Cloud ASR Setup (Optional)
+
+DashScope Qwen3-ASR-Flash-Realtime provides higher accuracy streaming recognition via the cloud. Cloud ASR is tried first on each utterance and automatically falls back to local on connection failure.
+
+**Prerequisites**: A DashScope account with API access enabled at [dashscope.aliyun.com](https://dashscope.aliyun.com).
+
+**Step 1 — Set the API key environment variable:**
+
+```bash
+export DASHSCOPE_API_KEY=your-key-here
+```
+
+Add this to `~/.bashrc` or `~/.zshrc` for persistence.
+
+**Step 2 — Enable in config:**
+
+Edit `~/.config/voicerouter/config.toml`:
+
+```toml
+[asr.cloud]
+enabled = true
+endpoint = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+model = "qwen3-asr-flash-realtime"
+api_key_env = "DASHSCOPE_API_KEY"
+language = "zh"   # zh | en | ja | etc.
+```
+
+**Note**: The local model download (Section 3) is still required for fallback when cloud ASR is unavailable. Cloud ASR returns punctuated text, so the `ct-punc` post-processing step is skipped automatically.
+
 ## Troubleshooting
 
 ### Audio not working

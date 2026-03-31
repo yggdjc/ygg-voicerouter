@@ -6,7 +6,7 @@
 
 ## 特性
 
-- **离线语音识别** — 基于 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)，支持 Paraformer（默认）和 FunASR Nano 模型
+- **离线语音识别** — 基于 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)，支持 Paraformer（默认）和 FunASR Nano 模型；可选**云端 ASR**（DashScope Qwen3-ASR-Flash-Realtime），失败时自动回退本地
 - **Actor 架构** — 每个组件独立线程运行，通过中央消息总线通信
 - **可组合 Pipeline** — 链式 Handler + 条件匹配，或 DAG 工作流编排
 - **内置 Handler** — inject（输入文字）、shell（执行命令）、pipe（子进程管道）、http（API 调用）、transform（正则/模板变换）、speak（TTS 语音输出）
@@ -60,6 +60,25 @@ hold_delay = 0.3        # auto 模式长按阈值（秒）
 model = "paraformer-zh"   # paraformer-zh | funasr-nano | whisper-tiny-en | whisper-base-en
 model_dir = "~/.cache/voicerouter/models"
 ```
+
+#### 云端 ASR（可选）
+
+DashScope Qwen3-ASR-Flash-Realtime 是实时流式云端语音识别服务。启用后优先使用云端；连接失败时自动回退到本地模型。云端返回结果自带标点，`restore_punctuation`（ct-punc）步骤将被跳过。
+
+配置步骤：
+1. 导出 API Key：`export DASHSCOPE_API_KEY=你的密钥`
+2. 修改配置文件：
+
+```toml
+[asr.cloud]
+enabled = true
+endpoint = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+model = "qwen3-asr-flash-realtime"
+api_key_env = "DASHSCOPE_API_KEY"
+language = "zh"   # zh | en | ja 等
+```
+
+本地模型仍需下载，用于回退。
 
 ### 后处理
 
