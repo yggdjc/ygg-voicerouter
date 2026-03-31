@@ -371,6 +371,7 @@ fn finalize_recording(
         None
     };
 
+    let from_cloud = cloud_result.is_some();
     let raw = if let Some(t) = cloud_result {
         t
     } else {
@@ -418,11 +419,11 @@ fn finalize_recording(
         }
     };
 
-    // Punctuation restoration.
-    let with_punct = if config.postprocess.restore_punctuation {
-        add_punctuation(&raw, punctuator, config)
-    } else {
+    // Punctuation restoration — skip for cloud ASR (already includes punctuation).
+    let with_punct = if from_cloud || !config.postprocess.restore_punctuation {
         raw.clone()
+    } else {
+        add_punctuation(&raw, punctuator, config)
     };
 
     let text = postprocess(&with_punct, &config.postprocess);
