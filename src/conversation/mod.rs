@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use crossbeam::channel::{Receiver, Sender};
 
 use crate::actor::{Actor, Message, SpeakSource};
-use crate::asr::AsrEngine;
+use crate::asr::{AsrEngine, CloudAsr};
 use crate::audio_source::AudioChunk;
 use crate::config::Config;
 use crate::llm::{ChatMessage, LlmClient};
@@ -74,6 +74,22 @@ impl Actor for ConversationActor {
         let mut state = State::Idle;
         let mut session: Option<Session> = None;
         let mut vad: Option<VadDetector> = None;
+        let mut cloud_asr: Option<CloudAsr> = if self.config.asr.cloud.enabled {
+            match CloudAsr::new(&self.config.asr.cloud) {
+                Ok(c) => {
+                    log::info!("[conversation] cloud ASR initialised");
+                    Some(c)
+                }
+                Err(e) => {
+                    log::warn!(
+                        "[conversation] cloud ASR init failed: {e:#}, using local only"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let mut asr_engine: Option<AsrEngine> = None;
         let mut audio_buffer: Vec<f32> = Vec::new();
         let mut pending_sentences: usize = 0;
@@ -139,6 +155,7 @@ impl Actor for ConversationActor {
                 State::Transcribing => {
                     overlay.send_transcribing();
                     state = handle_transcribing(
+                        &mut cloud_asr,
                         &mut asr_engine,
                         &self.config,
                         &audio_buffer,
@@ -500,6 +517,7 @@ fn process_audio_recording(
 // ---------------------------------------------------------------------------
 
 fn handle_transcribing(
+    cloud_asr: &mut Option<CloudAsr>,
     asr_engine: &mut Option<AsrEngine>,
     config: &Config,
     audio_buffer: &[f32],
@@ -508,29 +526,53 @@ fn handle_transcribing(
     vad: &mut Option<VadDetector>,
     overlay: &mut OverlayClient,
 ) -> State {
-    // Lazy-init ASR engine.
-    if asr_engine.is_none() {
-        log::info!("[conversation] initialising ASR engine (lazy)");
-        match AsrEngine::new(&config.asr) {
-            Ok(e) => *asr_engine = Some(e),
+    // Try cloud ASR first if available.
+    let cloud_result = if let Some(ref mut cloud) = cloud_asr {
+        match cloud.transcribe(audio_buffer, config.audio.sample_rate) {
+            Ok(t) if !t.is_empty() => {
+                log::info!("[conversation] cloud ASR transcript: {t:?}");
+                Some(t)
+            }
+            Ok(_) => {
+                log::debug!("[conversation] cloud ASR returned empty, falling back to local");
+                None
+            }
             Err(e) => {
-                log::error!("[conversation] ASR init failed: {e:#}");
-                speak_text("语音识别初始化失败", outbox);
-                end_session(outbox, config.sound.feedback, overlay);
-                return State::Idle;
+                log::warn!("[conversation] cloud ASR failed: {e:#}, falling back to local");
+                None
             }
         }
-    }
+    } else {
+        None
+    };
 
-    let transcript = match asr_engine
-        .as_mut()
-        .unwrap()
-        .transcribe(audio_buffer, config.audio.sample_rate)
-    {
-        Ok(t) => t,
-        Err(e) => {
-            log::error!("[conversation] transcription failed: {e:#}");
-            return State::Listening;
+    let transcript = if let Some(t) = cloud_result {
+        t
+    } else {
+        // Lazy-init local ASR engine.
+        if asr_engine.is_none() {
+            log::info!("[conversation] initialising ASR engine (lazy)");
+            match AsrEngine::new(&config.asr) {
+                Ok(e) => *asr_engine = Some(e),
+                Err(e) => {
+                    log::error!("[conversation] ASR init failed: {e:#}");
+                    speak_text("语音识别初始化失败", outbox);
+                    end_session(outbox, config.sound.feedback, overlay);
+                    return State::Idle;
+                }
+            }
+        }
+
+        match asr_engine
+            .as_mut()
+            .unwrap()
+            .transcribe(audio_buffer, config.audio.sample_rate)
+        {
+            Ok(t) => t,
+            Err(e) => {
+                log::error!("[conversation] transcription failed: {e:#}");
+                return State::Listening;
+            }
         }
     };
 

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use crossbeam::channel::{Receiver, Sender};
 
 use crate::actor::{Actor, Message};
-use crate::asr::AsrEngine;
+use crate::asr::{AsrEngine, CloudAsr};
 use crate::audio::{self, NoiseTracker};
 use crate::audio_source::AudioChunk;
 use crate::config::Config;
@@ -119,6 +119,21 @@ impl Actor for CoreActor {
             None
         };
 
+        let mut cloud_asr: Option<CloudAsr> = if self.config.asr.cloud.enabled {
+            match CloudAsr::new(&self.config.asr.cloud) {
+                Ok(c) => {
+                    log::info!("[core] cloud ASR initialised");
+                    Some(c)
+                }
+                Err(e) => {
+                    log::warn!("[core] cloud ASR init failed: {e:#}, using local only");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let mut punctuator: Option<sherpa_onnx::OfflinePunctuation> = None;
         let mut recording_start: Option<Instant> = None;
         let mut recording_buffer: Vec<f32> = Vec::new();
@@ -205,7 +220,8 @@ impl Actor for CoreActor {
                                         .map_or(0.0, |t| t.elapsed().as_secs_f32());
                                     finalize_recording(
                                         &recording_buffer, denoise_enabled,
-                                        &mut asr_engine, &mut punctuator,
+                                        &mut cloud_asr, &mut asr_engine,
+                                        &mut punctuator,
                                         &self.config, &outbox, elapsed,
                                         &mut noise_tracker, &active_wakeword,
                                         &mut overlay,
@@ -233,7 +249,8 @@ impl Actor for CoreActor {
                                     .map_or(0.0, |t| t.elapsed().as_secs_f32());
                                 finalize_recording(
                                     &recording_buffer, denoise_enabled,
-                                    &mut asr_engine, &mut punctuator,
+                                    &mut cloud_asr, &mut asr_engine,
+                                    &mut punctuator,
                                     &self.config, &outbox, elapsed,
                                     &mut noise_tracker, &active_wakeword,
                                     &mut overlay,
@@ -288,6 +305,7 @@ impl Actor for CoreActor {
 fn finalize_recording(
     samples: &[f32],
     denoise_enabled: bool,
+    cloud_asr: &mut Option<CloudAsr>,
     asr_engine: &mut Option<AsrEngine>,
     punctuator: &mut Option<sherpa_onnx::OfflinePunctuation>,
     config: &Config,
@@ -333,48 +351,70 @@ fn finalize_recording(
         return;
     }
 
-    // Lazy-init ASR engine.
-    if asr_engine.is_none() {
-        log::info!("[core] initialising ASR engine (lazy)");
-        match AsrEngine::new(&config.asr) {
-            Ok(e) => *asr_engine = Some(e),
+    // Try cloud ASR first if available.
+    let cloud_result = if let Some(ref mut cloud) = cloud_asr {
+        match cloud.transcribe(&samples, config.audio.sample_rate) {
+            Ok(t) if !t.is_empty() => {
+                log::info!("[core] cloud ASR transcript: {t:?}");
+                Some(t)
+            }
+            Ok(_) => {
+                log::debug!("[core] cloud ASR returned empty, falling back to local");
+                None
+            }
             Err(e) => {
-                log::error!("[core] ASR init failed: {e:#}");
-                beep_if(config, sound::beep_error);
-                overlay.send_idle();
-                return;
+                log::warn!("[core] cloud ASR failed: {e:#}, falling back to local");
+                None
             }
         }
-    }
+    } else {
+        None
+    };
 
-    let raw = match asr_engine
-        .as_mut()
-        .unwrap()
-        .transcribe(&samples, config.audio.sample_rate)
-    {
-        Ok(t) if !t.is_empty() => t,
-        Ok(_) if config.asr.provider != "cpu" => {
-            // GPU provider can silently fail (e.g. CUDA Paraformer tensor
-            // shape bug on short audio). Retry once with a CPU engine.
-            log::warn!("[core] GPU transcription returned empty, retrying with CPU");
-            match cpu_fallback_transcribe(&samples, config) {
-                Some(t) => t,
-                None => {
+    let raw = if let Some(t) = cloud_result {
+        t
+    } else {
+        // Lazy-init local ASR engine.
+        if asr_engine.is_none() {
+            log::info!("[core] initialising ASR engine (lazy)");
+            match AsrEngine::new(&config.asr) {
+                Ok(e) => *asr_engine = Some(e),
+                Err(e) => {
+                    log::error!("[core] ASR init failed: {e:#}");
+                    beep_if(config, sound::beep_error);
                     overlay.send_idle();
                     return;
                 }
             }
         }
-        Ok(_) => {
-            log::info!("[core] transcribed: (empty)");
-            overlay.send_idle();
-            return;
-        }
-        Err(e) => {
-            log::error!("[core] transcription failed: {e:#}");
-            beep_if(config, sound::beep_error);
-            overlay.send_idle();
-            return;
+
+        match asr_engine
+            .as_mut()
+            .unwrap()
+            .transcribe(&samples, config.audio.sample_rate)
+        {
+            Ok(t) if !t.is_empty() => t,
+            Ok(_) if config.asr.provider != "cpu" => {
+                log::warn!("[core] GPU transcription returned empty, retrying with CPU");
+                match cpu_fallback_transcribe(&samples, config) {
+                    Some(t) => t,
+                    None => {
+                        overlay.send_idle();
+                        return;
+                    }
+                }
+            }
+            Ok(_) => {
+                log::info!("[core] transcribed: (empty)");
+                overlay.send_idle();
+                return;
+            }
+            Err(e) => {
+                log::error!("[core] transcription failed: {e:#}");
+                beep_if(config, sound::beep_error);
+                overlay.send_idle();
+                return;
+            }
         }
     };
 

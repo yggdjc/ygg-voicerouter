@@ -17,7 +17,9 @@
 //! // let text = engine.transcribe(&samples, 16_000).unwrap();
 //! ```
 
+pub mod cloud;
 pub mod engine;
 pub mod models;
 
+pub use cloud::CloudAsr;
 pub use engine::AsrEngine;

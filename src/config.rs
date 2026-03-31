@@ -146,6 +146,8 @@ pub struct AsrConfig {
     pub model_dir: String,
     /// ONNX Runtime execution provider: `cpu` or `cuda`.
     pub provider: String,
+    /// Cloud ASR configuration (DashScope).
+    pub cloud: AsrCloudConfig,
 }
 
 impl Default for AsrConfig {
@@ -154,6 +156,30 @@ impl Default for AsrConfig {
             model: "paraformer-zh".to_owned(),
             model_dir: "~/.cache/voicerouter/models".to_owned(),
             provider: "cpu".to_owned(),
+            cloud: AsrCloudConfig::default(),
+        }
+    }
+}
+
+/// Cloud ASR configuration (DashScope Qwen3-ASR-Flash-Realtime).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AsrCloudConfig {
+    pub enabled: bool,
+    pub endpoint: String,
+    pub model: String,
+    pub api_key_env: String,
+    pub language: String,
+}
+
+impl Default for AsrCloudConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: "wss://dashscope.aliyuncs.com/api-ws/v1/realtime".to_owned(),
+            model: "qwen3-asr-flash-realtime".to_owned(),
+            api_key_env: "DASHSCOPE_API_KEY".to_owned(),
+            language: "zh".to_owned(),
         }
     }
 }

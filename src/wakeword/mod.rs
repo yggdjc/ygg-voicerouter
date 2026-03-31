@@ -64,6 +64,7 @@ impl Actor for WakewordActor {
             model: asr_model,
             model_dir: self.config.asr.model_dir.clone(),
             provider: "cpu".to_owned(),
+            cloud: Default::default(),
         };
         let mut asr = match AsrEngine::new(&asr_config) {
             Ok(e) => e,
