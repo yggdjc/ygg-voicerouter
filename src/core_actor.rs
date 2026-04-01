@@ -169,6 +169,8 @@ impl Actor for CoreActor {
                                 cooldown_until = None;
                             }
                             active_wakeword = wakeword;
+                            // Drain stale audio accumulated while Idle (inbox.recv blocks).
+                            while self.audio_rx.try_recv().is_ok() {}
                             log::info!("[core] recording started");
                             beep_if(&self.config, sound::beep_start);
                             recording_buffer.clear();
