@@ -43,11 +43,23 @@ impl CloudAsr {
 
     /// Transcribe f32 PCM audio via the cloud API.
     /// Returns the recognized text, or an error if the cloud call fails.
+    /// Automatically reconnects and retries once on stale connection errors.
     pub fn transcribe(&mut self, audio: &[f32], sample_rate: u32) -> Result<String> {
         if audio.is_empty() {
             return Ok(String::new());
         }
 
+        match self.transcribe_inner(audio, sample_rate) {
+            Ok(text) => Ok(text),
+            Err(e) => {
+                log::warn!("[cloud_asr] first attempt failed: {e:#}, reconnecting");
+                self.disconnect();
+                self.transcribe_inner(audio, sample_rate)
+            }
+        }
+    }
+
+    fn transcribe_inner(&mut self, audio: &[f32], sample_rate: u32) -> Result<String> {
         // Ensure connection.
         if self.ws.is_none() {
             self.connect()?;
