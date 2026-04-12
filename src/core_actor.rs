@@ -138,7 +138,6 @@ impl Actor for CoreActor {
         let mut recording_start: Option<Instant> = None;
         let mut recording_buffer: Vec<f32> = Vec::new();
         let denoise_enabled = self.config.audio.denoise;
-        let mut streaming_active = false;
         let mut state = CoreState::Idle;
         let max_record =
             Duration::from_secs(u64::from(self.config.audio.max_record_seconds));
@@ -176,18 +175,6 @@ impl Actor for CoreActor {
                             beep_if(&self.config, sound::beep_start);
                             recording_buffer.clear();
                             recording_start = Some(Instant::now());
-                            // Start cloud streaming session.
-                            streaming_active = false;
-                            if let Some(ref mut cloud) = cloud_asr {
-                                match cloud.start_stream(
-                                    self.config.audio.sample_rate,
-                                ) {
-                                    Ok(()) => streaming_active = true,
-                                    Err(e) => log::warn!(
-                                        "[core] cloud stream start failed: {e:#}"
-                                    ),
-                                }
-                            }
                             state = CoreState::Recording;
                         }
                         Ok(Message::Shutdown) => break,
@@ -199,22 +186,6 @@ impl Actor for CoreActor {
                         recv(self.audio_rx) -> chunk => {
                             if let Ok(chunk) = chunk {
                                 recording_buffer.extend_from_slice(&chunk);
-
-                                // Stream to cloud ASR if active.
-                                if streaming_active {
-                                    if let Some(ref mut cloud) = cloud_asr {
-                                        if let Err(e) = cloud.send_audio(&chunk) {
-                                            log::warn!(
-                                                "[core] cloud stream send failed: {e:#}"
-                                            );
-                                            streaming_active = false;
-                                        } else if let Some(partial) =
-                                            cloud.poll_partial()
-                                        {
-                                            overlay.send_transcribing_text(&partial);
-                                        }
-                                    }
-                                }
 
                                 // Update silence tracking from latest chunk RMS.
                                 let rms = audio::compute_rms(&chunk);
@@ -255,13 +226,12 @@ impl Actor for CoreActor {
                                         &mut punctuator,
                                         &self.config, &outbox, elapsed,
                                         &mut noise_tracker, &active_wakeword,
-                                        &mut overlay, streaming_active,
+                                        &mut overlay,
                                     );
                                     recording_buffer.clear();
                                     recording_start = None;
                                     silence_since = None;
                                     speech_detected = false;
-                                    streaming_active = false;
                                     // Cooldown only for wakeword (prevent retrigger).
                                     if active_wakeword.is_some() {
                                         cooldown_until = Some(
@@ -285,12 +255,11 @@ impl Actor for CoreActor {
                                     &mut punctuator,
                                     &self.config, &outbox, elapsed,
                                     &mut noise_tracker, &active_wakeword,
-                                    &mut overlay, streaming_active,
+                                    &mut overlay,
                                 );
                                 recording_buffer.clear();
                                 silence_since = None;
                                 speech_detected = false;
-                                streaming_active = false;
                                 active_wakeword = None;
                                 state = CoreState::Idle;
                             }
@@ -347,7 +316,6 @@ fn finalize_recording(
     noise_tracker: &mut NoiseTracker,
     wakeword: &Option<String>,
     overlay: &mut OverlayClient,
-    streaming_active: bool,
 ) {
     log::info!("[core] recording stopped ({elapsed:.1}s)");
     beep_if(config, sound::beep_done);
@@ -385,45 +353,20 @@ fn finalize_recording(
         return;
     }
 
-    // Try cloud ASR first: finish streaming session or fall back to batch.
+    // Try cloud ASR first if available.
     let cloud_result = if let Some(ref mut cloud) = cloud_asr {
-        if streaming_active {
-            match cloud.finish_stream() {
-                Ok(t) if !t.is_empty() => {
-                    log::info!("[core] cloud ASR (stream) transcript: {t:?}");
-                    Some(t)
-                }
-                Ok(_) => {
-                    log::debug!(
-                        "[core] cloud ASR stream returned empty, falling back"
-                    );
-                    None
-                }
-                Err(e) => {
-                    log::warn!(
-                        "[core] cloud ASR finish failed: {e:#}, falling back"
-                    );
-                    None
-                }
+        match cloud.transcribe(&samples, config.audio.sample_rate) {
+            Ok(t) if !t.is_empty() => {
+                log::info!("[core] cloud ASR transcript: {t:?}");
+                Some(t)
             }
-        } else {
-            match cloud.transcribe(&samples, config.audio.sample_rate) {
-                Ok(t) if !t.is_empty() => {
-                    log::info!("[core] cloud ASR transcript: {t:?}");
-                    Some(t)
-                }
-                Ok(_) => {
-                    log::debug!(
-                        "[core] cloud ASR returned empty, falling back to local"
-                    );
-                    None
-                }
-                Err(e) => {
-                    log::warn!(
-                        "[core] cloud ASR failed: {e:#}, falling back to local"
-                    );
-                    None
-                }
+            Ok(_) => {
+                log::debug!("[core] cloud ASR returned empty, falling back to local");
+                None
+            }
+            Err(e) => {
+                log::warn!("[core] cloud ASR failed: {e:#}, falling back to local");
+                None
             }
         }
     } else {

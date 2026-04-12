@@ -73,12 +73,6 @@ impl OverlayClient {
         self.send_raw(r#"{"state":"transcribing"}"#);
     }
 
-    pub fn send_transcribing_text(&mut self, text: &str) {
-        self.last_level = u8::MAX;
-        let msg = serde_json::json!({"state": "transcribing", "text": text});
-        self.send_raw(&msg.to_string());
-    }
-
     pub fn send_result(&mut self, text: &str) {
         self.last_level = u8::MAX;
         let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
