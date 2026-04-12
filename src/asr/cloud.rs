@@ -29,6 +29,8 @@ pub struct CloudAsr {
     ws: Option<WebSocket<MaybeTlsStream<TcpStream>>>,
     /// Whether a streaming session is currently active (between start/finish).
     streaming: bool,
+    /// Completed transcripts received during polling (server_vad may emit these).
+    completed_buffer: Vec<String>,
 }
 
 impl CloudAsr {
@@ -44,6 +46,7 @@ impl CloudAsr {
             api_key,
             ws: None,
             streaming: false,
+            completed_buffer: Vec::new(),
         })
     }
 
@@ -75,11 +78,13 @@ impl CloudAsr {
             self.streaming = false;
         }
 
-        if self.ws.is_none() {
-            self.connect()?;
-            self.send_session_update(sample_rate)?;
-        }
+        // Streaming needs a fresh connection with server_vad mode.
+        // Cannot reuse a manual-mode connection.
+        self.disconnect();
+        self.connect()?;
+        self.send_session_update_streaming(sample_rate)?;
         self.streaming = true;
+        self.completed_buffer.clear();
         log::debug!("[cloud_asr] stream started");
         Ok(())
     }
@@ -121,17 +126,25 @@ impl CloudAsr {
                         text.as_str(),
                     ) {
                         let msg_type = data["type"].as_str().unwrap_or("");
-                        if msg_type
-                            == "conversation.item.input_audio_transcription.text"
-                        {
-                            if let Some(t) = data["text"].as_str() {
-                                let trimmed = t.trim();
-                                if !trimmed.is_empty() {
-                                    latest = Some(trimmed.to_string());
+                        match msg_type {
+                            "conversation.item.input_audio_transcription.text" => {
+                                if let Some(t) = data["text"].as_str() {
+                                    let trimmed = t.trim();
+                                    if !trimmed.is_empty() {
+                                        latest = Some(trimmed.to_string());
+                                    }
                                 }
                             }
+                            "conversation.item.input_audio_transcription.completed" => {
+                                if let Some(t) = data["transcript"].as_str() {
+                                    let trimmed = t.trim();
+                                    if !trimmed.is_empty() {
+                                        self.completed_buffer.push(trimmed.to_string());
+                                    }
+                                }
+                            }
+                            _ => {} // Ignore other events during polling.
                         }
-                        // Ignore other events during polling.
                     }
                 }
                 Ok(Message::Close(_)) => {
@@ -163,20 +176,65 @@ impl CloudAsr {
         latest
     }
 
-    /// Finish the streaming session: send commit, wait for `.completed`.
+    /// Finish the streaming session.
+    /// In server_vad mode, completed results may already be buffered from polling.
+    /// Send commit for any remaining audio, then collect final results.
     pub fn finish_stream(&mut self) -> Result<String> {
         if !self.streaming {
             anyhow::bail!("finish_stream called without active stream");
         }
         self.streaming = false;
 
+        // Send commit for any remaining audio.
         let commit = serde_json::json!({"type": "input_audio_buffer.commit"});
-        if let Err(e) = self.send_json(&commit) {
-            self.disconnect();
-            return Err(e.context("finish_stream: failed to send commit"));
+        self.send_json(&commit).ok(); // best-effort
+
+        // Wait briefly for any final completed event.
+        if let Some(ws) = self.ws.as_ref() {
+            set_read_timeout(ws, Some(Duration::from_secs(3)));
+        }
+        // Drain remaining events until we get completed or timeout.
+        loop {
+            let ws = match self.ws.as_mut() {
+                Some(ws) => ws,
+                None => break,
+            };
+            match ws.read() {
+                Ok(Message::Text(text)) => {
+                    if let Ok(data) = serde_json::from_str::<serde_json::Value>(
+                        text.as_str(),
+                    ) {
+                        let msg_type = data["type"].as_str().unwrap_or("");
+                        if msg_type == "conversation.item.input_audio_transcription.completed" {
+                            if let Some(t) = data["transcript"].as_str() {
+                                let trimmed = t.trim();
+                                if !trimmed.is_empty() {
+                                    self.completed_buffer.push(trimmed.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(tungstenite::Error::Io(ref e))
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    break;
+                }
+                _ => break,
+            }
         }
 
-        self.recv_transcript()
+        // Restore normal timeout.
+        if let Some(ws) = self.ws.as_ref() {
+            set_read_timeout(ws, Some(RECV_TIMEOUT));
+        }
+
+        // Join all completed segments.
+        let result = self.completed_buffer.join("");
+        self.completed_buffer.clear();
+        log::info!("[cloud_asr] transcript: {result:?}");
+        Ok(result)
     }
 
     fn transcribe_inner(&mut self, audio: &[f32], sample_rate: u32) -> Result<String> {
@@ -244,6 +302,28 @@ impl CloudAsr {
     }
 
     fn send_session_update(&mut self, sample_rate: u32) -> Result<()> {
+        self.send_session_update_mode(sample_rate, false)
+    }
+
+    fn send_session_update_streaming(&mut self, sample_rate: u32) -> Result<()> {
+        self.send_session_update_mode(sample_rate, true)
+    }
+
+    fn send_session_update_mode(
+        &mut self,
+        sample_rate: u32,
+        server_vad: bool,
+    ) -> Result<()> {
+        let turn_detection = if server_vad {
+            // Server VAD enables real-time partial results during recording.
+            serde_json::json!({
+                "type": "server_vad",
+                "threshold": 0.0,
+                "silence_duration_ms": 2000
+            })
+        } else {
+            serde_json::json!(null)
+        };
         let event = serde_json::json!({
             "type": "session.update",
             "session": {
@@ -253,13 +333,12 @@ impl CloudAsr {
                 "input_audio_transcription": {
                     "language": self.config.language
                 },
-                "turn_detection": null
+                "turn_detection": turn_detection
             }
         });
         self.send_json(&event)?;
-        // Read session.updated confirmation.
         self.recv_event("session.updated")?;
-        log::debug!("[cloud_asr] session configured");
+        log::debug!("[cloud_asr] session configured (server_vad={server_vad})");
         Ok(())
     }
 
