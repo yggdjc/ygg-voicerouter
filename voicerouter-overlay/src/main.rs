@@ -41,11 +41,21 @@ fn main() {
                         l.set_opacity(0.92);
                         w.set_visible(true);
                     }
-                    OverlayMsg::Transcribing => {
+                    OverlayMsg::Transcribing { text } => {
                         ws.color.set(BarColor::THINKING);
                         ws.mode.set(WaveMode::Pulse);
-                        l.set_text("Transcribing...");
+                        let display_text =
+                            text.as_deref().unwrap_or("Transcribing...");
+                        l.set_text(display_text);
                         l.set_opacity(0.70);
+                        // Dynamic width based on text content.
+                        let char_count = display_text.chars().count();
+                        // ~14px per CJK char at 14pt font;
+                        // waveform(44) + gap(12) + text + padding(24)
+                        let text_width = (char_count as i32 * 14).max(120);
+                        let total_width =
+                            (44 + 12 + text_width + 24).clamp(220, 600);
+                        w.set_default_size(total_width, 56);
                         w.set_visible(true);
                     }
                     OverlayMsg::Result { .. } => {

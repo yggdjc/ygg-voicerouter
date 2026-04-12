@@ -20,10 +20,15 @@ const AUDIO_CHUNK_BYTES: usize = 3200;
 /// Maximum time to wait for transcription result.
 const RECV_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Non-blocking poll timeout for checking partial results.
+const POLL_TIMEOUT: Duration = Duration::from_millis(1);
+
 pub struct CloudAsr {
     config: AsrCloudConfig,
     api_key: String,
     ws: Option<WebSocket<MaybeTlsStream<TcpStream>>>,
+    /// Whether a streaming session is currently active (between start/finish).
+    streaming: bool,
 }
 
 impl CloudAsr {
@@ -38,6 +43,7 @@ impl CloudAsr {
             config: config.clone(),
             api_key,
             ws: None,
+            streaming: false,
         })
     }
 
@@ -57,6 +63,120 @@ impl CloudAsr {
                 self.transcribe_inner(audio, sample_rate)
             }
         }
+    }
+
+    /// Start a streaming session. Must call before `send_audio`.
+    /// Ensures the WebSocket is connected and configured.
+    pub fn start_stream(&mut self, sample_rate: u32) -> Result<()> {
+        // Tear down any stale connection first.
+        if self.streaming {
+            log::warn!("[cloud_asr] start_stream called while already streaming");
+            self.disconnect();
+            self.streaming = false;
+        }
+
+        if self.ws.is_none() {
+            self.connect()?;
+            self.send_session_update(sample_rate)?;
+        }
+        self.streaming = true;
+        log::debug!("[cloud_asr] stream started");
+        Ok(())
+    }
+
+    /// Send an audio chunk during recording. Non-blocking (fire-and-forget).
+    pub fn send_audio(&mut self, audio: &[f32]) -> Result<()> {
+        if audio.is_empty() {
+            return Ok(());
+        }
+        let pcm_bytes = f32_to_i16_bytes(audio);
+        for chunk in pcm_bytes.chunks(AUDIO_CHUNK_BYTES) {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(chunk);
+            let event = serde_json::json!({
+                "type": "input_audio_buffer.append",
+                "audio": b64
+            });
+            if let Err(e) = self.send_json(&event) {
+                self.disconnect();
+                self.streaming = false;
+                return Err(e.context("send_audio: failed to send chunk"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Non-blocking poll for partial transcription results.
+    /// Returns the latest partial text seen, or `None` if nothing available.
+    pub fn poll_partial(&mut self) -> Option<String> {
+        let ws = self.ws.as_mut()?;
+
+        // Set very short timeout for non-blocking read.
+        set_read_timeout(ws, Some(POLL_TIMEOUT));
+
+        let mut latest: Option<String> = None;
+        loop {
+            match ws.read() {
+                Ok(Message::Text(text)) => {
+                    if let Ok(data) = serde_json::from_str::<serde_json::Value>(
+                        text.as_str(),
+                    ) {
+                        let msg_type = data["type"].as_str().unwrap_or("");
+                        if msg_type
+                            == "conversation.item.input_audio_transcription.text"
+                        {
+                            if let Some(t) = data["text"].as_str() {
+                                let trimmed = t.trim();
+                                if !trimmed.is_empty() {
+                                    latest = Some(trimmed.to_string());
+                                }
+                            }
+                        }
+                        // Ignore other events during polling.
+                    }
+                }
+                Ok(Message::Close(_)) => {
+                    log::warn!("[cloud_asr] connection closed during poll");
+                    self.disconnect();
+                    self.streaming = false;
+                    break;
+                }
+                Err(tungstenite::Error::Io(ref e))
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    // No more data available right now.
+                    break;
+                }
+                Err(_) => {
+                    // Any other read error — stop polling this tick.
+                    break;
+                }
+                _ => {} // Ping/Pong
+            }
+        }
+
+        // Restore normal timeout for subsequent blocking reads.
+        if let Some(ws) = self.ws.as_ref() {
+            set_read_timeout(ws, Some(RECV_TIMEOUT));
+        }
+
+        latest
+    }
+
+    /// Finish the streaming session: send commit, wait for `.completed`.
+    pub fn finish_stream(&mut self) -> Result<String> {
+        if !self.streaming {
+            anyhow::bail!("finish_stream called without active stream");
+        }
+        self.streaming = false;
+
+        let commit = serde_json::json!({"type": "input_audio_buffer.commit"});
+        if let Err(e) = self.send_json(&commit) {
+            self.disconnect();
+            return Err(e.context("finish_stream: failed to send commit"));
+        }
+
+        self.recv_transcript()
     }
 
     fn transcribe_inner(&mut self, audio: &[f32], sample_rate: u32) -> Result<String> {
