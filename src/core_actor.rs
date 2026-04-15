@@ -76,6 +76,7 @@ pub struct CoreActor {
     config: Config,
     preload: bool,
     audio_rx: Receiver<AudioChunk>,
+    audio_ctl: Option<Sender<crate::audio_source::AudioControl>>,
 }
 
 impl CoreActor {
@@ -84,8 +85,18 @@ impl CoreActor {
         config: Config,
         preload: bool,
         audio_rx: Receiver<AudioChunk>,
+        audio_ctl: Option<Sender<crate::audio_source::AudioControl>>,
     ) -> Self {
-        Self { config, preload, audio_rx }
+        Self { config, preload, audio_rx, audio_ctl }
+    }
+}
+
+fn send_audio_ctl(
+    ctl: &Option<Sender<crate::audio_source::AudioControl>>,
+    cmd: crate::audio_source::AudioControl,
+) {
+    if let Some(ref tx) = ctl {
+        tx.send(cmd).ok();
     }
 }
 
@@ -171,6 +182,7 @@ impl Actor for CoreActor {
                             active_wakeword = wakeword;
                             // Drain stale audio accumulated while Idle (inbox.recv blocks).
                             while self.audio_rx.try_recv().is_ok() {}
+                            send_audio_ctl(&self.audio_ctl, crate::audio_source::AudioControl::Open);
                             log::info!("[core] recording started");
                             beep_if(&self.config, sound::beep_start);
                             recording_buffer.clear();
@@ -240,6 +252,7 @@ impl Actor for CoreActor {
                                     }
                                     active_wakeword = None;
                                     outbox.send(Message::StopListening).ok();
+                                    send_audio_ctl(&self.audio_ctl, crate::audio_source::AudioControl::Close);
                                     state = CoreState::Idle;
                                 }
                             }
@@ -261,6 +274,7 @@ impl Actor for CoreActor {
                                 silence_since = None;
                                 speech_detected = false;
                                 active_wakeword = None;
+                                send_audio_ctl(&self.audio_ctl, crate::audio_source::AudioControl::Close);
                                 state = CoreState::Idle;
                             }
                             Ok(Message::CancelRecording) => {
@@ -291,6 +305,7 @@ impl Actor for CoreActor {
 
                     match inbox.recv() {
                         Ok(Message::UnmuteInput) => {
+                            send_audio_ctl(&self.audio_ctl, crate::audio_source::AudioControl::Close);
                             state = CoreState::Idle;
                         }
                         Ok(Message::Shutdown) => break,

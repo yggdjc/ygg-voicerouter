@@ -37,12 +37,26 @@ enum State {
 pub struct ConversationActor {
     config: Config,
     audio_rx: Receiver<AudioChunk>,
+    audio_ctl: Option<Sender<crate::audio_source::AudioControl>>,
 }
 
 impl ConversationActor {
     #[must_use]
-    pub fn new(config: Config, audio_rx: Receiver<AudioChunk>) -> Self {
-        Self { config, audio_rx }
+    pub fn new(
+        config: Config,
+        audio_rx: Receiver<AudioChunk>,
+        audio_ctl: Option<Sender<crate::audio_source::AudioControl>>,
+    ) -> Self {
+        Self { config, audio_rx, audio_ctl }
+    }
+}
+
+fn send_audio_ctl(
+    ctl: &Option<Sender<crate::audio_source::AudioControl>>,
+    cmd: crate::audio_source::AudioControl,
+) {
+    if let Some(ref tx) = ctl {
+        tx.send(cmd).ok();
     }
 }
 
@@ -108,6 +122,7 @@ impl Actor for ConversationActor {
                 &outbox,
                 &self.config,
                 &mut overlay,
+                &self.audio_ctl,
             );
             if result == ControlResult::Shutdown {
                 return;
@@ -118,13 +133,11 @@ impl Actor for ConversationActor {
                 State::Listening => {
                     if check_timeout(&session, &self.config) {
                         log::info!("[conversation] session timed out");
-                        end_session(&outbox, feedback, &mut overlay);
-                        reset_state(
-                            &mut state,
-                            &mut session,
-                            &mut vad,
-                            &mut audio_buffer,
+                        end_conversation(
+                            &outbox, feedback, &mut state, &mut session,
+                            &mut vad, &mut overlay, &self.audio_ctl,
                         );
+                        audio_buffer.clear();
                         continue;
                     }
                     let new_state = process_audio_listening(
@@ -163,6 +176,7 @@ impl Actor for ConversationActor {
                         &outbox,
                         &mut vad,
                         &mut overlay,
+                        &self.audio_ctl,
                     );
                     audio_buffer.clear();
                 }
@@ -176,6 +190,7 @@ impl Actor for ConversationActor {
                         &outbox,
                         &mut vad,
                         &mut overlay,
+                        &self.audio_ctl,
                     );
                 }
                 State::Speaking => {
@@ -242,8 +257,10 @@ fn end_conversation(
     session: &mut Option<Session>,
     vad: &mut Option<VadDetector>,
     overlay: &mut OverlayClient,
+    audio_ctl: &Option<Sender<crate::audio_source::AudioControl>>,
 ) {
     end_session(outbox, feedback, overlay);
+    send_audio_ctl(audio_ctl, crate::audio_source::AudioControl::Close);
     *state = State::Idle;
     *session = None;
     *vad = None;
@@ -361,6 +378,7 @@ fn drain_control(
     outbox: &Sender<Message>,
     config: &Config,
     overlay: &mut OverlayClient,
+    audio_ctl: &Option<Sender<crate::audio_source::AudioControl>>,
 ) -> ControlResult {
     while let Ok(msg) = inbox.try_recv() {
         match msg {
@@ -373,7 +391,7 @@ fn drain_control(
                     log::info!(
                         "[conversation] starting session (wakeword={wakeword:?})"
                     );
-                    start_session(state, session, vad, config, outbox, overlay);
+                    start_session(state, session, vad, config, outbox, overlay, audio_ctl);
                 }
             }
             Message::EndConversation | Message::StartListening { .. } => {
@@ -381,6 +399,7 @@ fn drain_control(
                     log::info!("[conversation] ending session (reason: {msg:?})");
                     end_conversation(
                         outbox, config.sound.feedback, state, session, vad, overlay,
+                        audio_ctl,
                     );
                     *pending_sentences = 0;
                 }
@@ -412,7 +431,9 @@ fn start_session(
     config: &Config,
     outbox: &Sender<Message>,
     overlay: &mut OverlayClient,
+    audio_ctl: &Option<Sender<crate::audio_source::AudioControl>>,
 ) {
+    send_audio_ctl(audio_ctl, crate::audio_source::AudioControl::Open);
     let conv = &config.conversation;
     *session = Some(Session::new(
         conv.llm.system_prompt.clone(),
@@ -525,6 +546,7 @@ fn handle_transcribing(
     outbox: &Sender<Message>,
     vad: &mut Option<VadDetector>,
     overlay: &mut OverlayClient,
+    audio_ctl: &Option<Sender<crate::audio_source::AudioControl>>,
 ) -> State {
     // Try cloud ASR first if available.
     let cloud_result = if let Some(ref mut cloud) = cloud_asr {
@@ -584,7 +606,7 @@ fn handle_transcribing(
     log::info!("[conversation] transcript: {transcript:?}");
 
     return finalize_transcript(
-        &transcript, config, session, outbox, vad, overlay,
+        &transcript, config, session, outbox, vad, overlay, audio_ctl,
     );
 }
 
@@ -595,6 +617,7 @@ fn finalize_transcript(
     outbox: &Sender<Message>,
     vad: &mut Option<VadDetector>,
     overlay: &mut OverlayClient,
+    audio_ctl: &Option<Sender<crate::audio_source::AudioControl>>,
 ) -> State {
     let Some(ref mut sess) = session else {
         return State::Idle;
@@ -605,6 +628,7 @@ fn finalize_transcript(
         speak_text("好的", outbox);
         end_conversation(
             outbox, config.sound.feedback, &mut State::Idle, session, vad, overlay,
+            audio_ctl,
         );
         return State::Idle;
     }
@@ -621,6 +645,7 @@ fn handle_thinking(
     outbox: &Sender<Message>,
     vad: &mut Option<VadDetector>,
     overlay: &mut OverlayClient,
+    audio_ctl: &Option<Sender<crate::audio_source::AudioControl>>,
 ) -> State {
     let Some(ref mut sess) = session else {
         return State::Idle;
@@ -644,6 +669,7 @@ fn handle_thinking(
             let mut s = State::Idle;
             end_conversation(
                 outbox, config.sound.feedback, &mut s, session, vad, overlay,
+                audio_ctl,
             );
             return State::Idle;
         }
@@ -729,7 +755,7 @@ mod tests {
     #[test]
     fn conversation_actor_name() {
         let (_tx, rx) = crossbeam::channel::bounded(1);
-        let actor = ConversationActor::new(Config::default(), rx);
+        let actor = ConversationActor::new(Config::default(), rx, None);
         assert_eq!(Actor::name(&actor), "conversation");
     }
 }

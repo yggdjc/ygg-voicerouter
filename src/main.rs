@@ -273,6 +273,15 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
         crossbeam::channel::bounded::<voicerouter::audio_source::AudioChunk>(256);
     let (audio_stop_tx, audio_stop_rx) = crossbeam::channel::bounded::<()>(1);
 
+    let needs_always_on = config.wakeword.enabled || config.continuous.enabled;
+    let (audio_ctl_tx, audio_ctl_rx) = if needs_always_on {
+        (None, None)
+    } else {
+        let (tx, rx) =
+            crossbeam::channel::bounded::<voicerouter::audio_source::AudioControl>(4);
+        (Some(tx), Some(rx))
+    };
+
     let audio_config = config.audio.clone();
     let mut audio_subscribers = vec![core_audio_tx, wakeword_audio_tx];
 
@@ -299,7 +308,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
                 &audio_config,
                 audio_subscribers,
                 audio_stop_rx,
-                None,
+                audio_ctl_rx,
             ) {
                 log::error!("[audio_source] failed: {e:#}");
             }
@@ -307,7 +316,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
 
     // Spawn actors.
     let hotkey_actor = HotkeyActor::new(config.hotkey.clone());
-    let core_actor = CoreActor::new(config.clone(), preload, core_audio_rx);
+    let core_actor = CoreActor::new(config.clone(), preload, core_audio_rx, audio_ctl_tx.clone());
 
     let bus_tx_hotkey = bus_tx.clone();
     let bus_tx_core = bus_tx.clone();
@@ -358,7 +367,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
     let conversation_handle = if let (Some((_conv_tx, conv_rx)), Some(conv_audio_rx)) =
         (conversation_channels, conversation_audio_rx)
     {
-        let conversation_actor = ConversationActor::new(config.clone(), conv_audio_rx);
+        let conversation_actor = ConversationActor::new(config.clone(), conv_audio_rx, audio_ctl_tx.clone());
         let bus_tx_conversation = bus_tx.clone();
         Some(
             std::thread::Builder::new()
