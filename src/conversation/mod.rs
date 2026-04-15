@@ -266,17 +266,6 @@ fn end_conversation(
     *vad = None;
 }
 
-fn reset_state(
-    state: &mut State,
-    session: &mut Option<Session>,
-    vad: &mut Option<VadDetector>,
-    audio_buffer: &mut Vec<f32>,
-) {
-    *state = State::Idle;
-    *session = None;
-    *vad = None;
-    audio_buffer.clear();
-}
 
 // ---------------------------------------------------------------------------
 // Helpers: idle loop, warmup, LLM init
