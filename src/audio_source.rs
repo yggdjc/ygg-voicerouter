@@ -11,15 +11,20 @@ use crate::config::AudioConfig;
 /// A chunk of mono f32 PCM samples shared via Arc (zero-copy fan-out).
 pub type AudioChunk = Arc<[f32]>;
 
-/// Starts the cpal input stream and broadcasts chunks to all subscribers.
-///
-/// This function blocks the calling thread until `stop` is signalled.
-/// It is meant to be spawned on a dedicated thread.
-pub fn run_audio_source(
-    config: &AudioConfig,
-    subscribers: Vec<Sender<AudioChunk>>,
-    stop: crossbeam::channel::Receiver<()>,
-) -> Result<()> {
+/// Commands sent to audio_source to open/close the device in lazy mode.
+#[derive(Debug, Clone, Copy)]
+pub enum AudioControl {
+    Open,
+    Close,
+}
+
+struct ResolvedDevice {
+    device: cpal::Device,
+    stream_config: cpal::StreamConfig,
+    channels: usize,
+}
+
+fn resolve_device(config: &AudioConfig) -> Result<ResolvedDevice> {
     let host = cpal::default_host();
     let device = host
         .default_input_device()
@@ -64,10 +69,18 @@ pub fn run_audio_source(
     );
 
     let channels = stream_config.channels as usize;
-    let subs = subscribers;
+    Ok(ResolvedDevice { device, stream_config, channels })
+}
 
-    let stream = device.build_input_stream(
-        &stream_config,
+fn build_stream(
+    resolved: &ResolvedDevice,
+    subs: &Arc<[Sender<AudioChunk>]>,
+) -> Result<cpal::Stream> {
+    let channels = resolved.channels;
+    let subs = Arc::clone(subs);
+
+    let stream = resolved.device.build_input_stream(
+        &resolved.stream_config,
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
             let mono: Vec<f32> = if channels == 1 {
                 data.to_vec()
@@ -79,7 +92,7 @@ pub fn run_audio_source(
 
             let chunk: AudioChunk = Arc::from(mono.into_boxed_slice());
 
-            for tx in &subs {
+            for tx in subs.iter() {
                 let _ = tx.try_send(Arc::clone(&chunk));
             }
         },
@@ -89,10 +102,88 @@ pub fn run_audio_source(
     .context("failed to build input stream")?;
 
     stream.play().context("failed to start input stream")?;
-    log::info!("[audio_source] streaming");
+    Ok(stream)
+}
 
-    // Block until stop signal.
+/// Starts the cpal input stream and broadcasts chunks to all subscribers.
+///
+/// This function blocks the calling thread until `stop` is signalled.
+/// It is meant to be spawned on a dedicated thread.
+///
+/// When `control` is `None`, the device streams continuously (always-on).
+/// When `control` is `Some(rx)`, the device opens/closes on demand (lazy mode).
+pub fn run_audio_source(
+    config: &AudioConfig,
+    subscribers: Vec<Sender<AudioChunk>>,
+    stop: crossbeam::channel::Receiver<()>,
+    control: Option<crossbeam::channel::Receiver<AudioControl>>,
+) -> Result<()> {
+    let resolved = resolve_device(config)?;
+    let subs: Arc<[Sender<AudioChunk>]> = Arc::from(subscribers.into_boxed_slice());
+
+    match control {
+        None => run_always_on(&resolved, &subs, &stop),
+        Some(ctrl) => run_lazy(&resolved, &subs, &stop, &ctrl),
+    }
+}
+
+fn run_always_on(
+    resolved: &ResolvedDevice,
+    subs: &Arc<[Sender<AudioChunk>]>,
+    stop: &crossbeam::channel::Receiver<()>,
+) -> Result<()> {
+    let _stream = build_stream(resolved, subs)?;
+    log::info!("[audio_source] streaming");
     let _ = stop.recv();
+    log::info!("[audio_source] stopped");
+    Ok(())
+}
+
+fn run_lazy(
+    resolved: &ResolvedDevice,
+    subs: &Arc<[Sender<AudioChunk>]>,
+    stop: &crossbeam::channel::Receiver<()>,
+    ctrl: &crossbeam::channel::Receiver<AudioControl>,
+) -> Result<()> {
+    log::info!("[audio_source] lazy mode, device closed");
+    let mut stream: Option<cpal::Stream> = None;
+    let mut open_count: u32 = 0;
+
+    loop {
+        crossbeam::select! {
+            recv(ctrl) -> msg => {
+                match msg {
+                    Ok(AudioControl::Open) => {
+                        open_count += 1;
+                        if open_count == 1 {
+                            match build_stream(resolved, subs) {
+                                Ok(s) => {
+                                    log::info!("[audio_source] device opened");
+                                    stream = Some(s);
+                                }
+                                Err(e) => {
+                                    log::error!(
+                                        "[audio_source] failed to open: {e:#}"
+                                    );
+                                    open_count = 0;
+                                }
+                            }
+                        }
+                    }
+                    Ok(AudioControl::Close) => {
+                        open_count = open_count.saturating_sub(1);
+                        if open_count == 0 && stream.is_some() {
+                            stream = None;
+                            log::info!("[audio_source] device closed");
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            recv(stop) -> _ => break,
+        }
+    }
+
     log::info!("[audio_source] stopped");
     Ok(())
 }
@@ -107,5 +198,13 @@ mod tests {
         assert_eq!(chunk.len(), 160);
         let clone = Arc::clone(&chunk);
         assert_eq!(clone.len(), 160);
+    }
+
+    #[test]
+    fn audio_control_debug_display() {
+        let open = AudioControl::Open;
+        let close = AudioControl::Close;
+        assert_eq!(format!("{open:?}"), "Open");
+        assert_eq!(format!("{close:?}"), "Close");
     }
 }
