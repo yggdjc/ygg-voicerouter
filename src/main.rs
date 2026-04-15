@@ -299,6 +299,7 @@ fn run_daemon(config: Config, preload: bool) -> Result<()> {
                 &audio_config,
                 audio_subscribers,
                 audio_stop_rx,
+                None,
             ) {
                 log::error!("[audio_source] failed: {e:#}");
             }
