@@ -51,6 +51,16 @@ fn open_keyboard_devices(target_key: evdev::Key) -> Vec<evdev::Device> {
             continue;
         }
 
+        // Skip our own injection tool's virtual device — it gets destroyed and
+        // recreated on every inject, leaving stale fds. Listening to it adds
+        // no value (the user never types via ydotoold) and creates a feedback
+        // loop where each inject invalidates the device we're polling.
+        let name = device.name().unwrap_or("");
+        if name.contains("ydotoold") {
+            debug!("skipping ydotoold virtual device: {}", path.display());
+            continue;
+        }
+
         // Set O_NONBLOCK so poll() never blocks.
         // SAFETY: AsRawFd is always valid for an open Device.
         let fd = device.as_raw_fd();
@@ -130,7 +140,10 @@ impl HotkeyMonitor {
             return Some(ev);
         }
 
-        for device in &mut self.devices {
+        let mut dead_indices: Vec<usize> = Vec::new();
+        let mut hot_event: Option<HotkeyEvent> = None;
+
+        for (idx, device) in self.devices.iter_mut().enumerate() {
             match device.fetch_events() {
                 Ok(events) => {
                     for event in events {
@@ -162,7 +175,7 @@ impl HotkeyMonitor {
                             self.last_event_action = Some(action);
 
                             if let Some(ev) = self.state_machine.process(action, now) {
-                                return Some(ev);
+                                hot_event = Some(ev);
                             }
                         }
                     }
@@ -170,12 +183,26 @@ impl HotkeyMonitor {
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
                     // No events available on this device right now — expected.
                 }
+                Err(e) if e.raw_os_error() == Some(libc::ENODEV) => {
+                    // Device disappeared (e.g. ydotoold rebuilt its virtual device).
+                    // Drop it from the polled set instead of spamming logs forever.
+                    dead_indices.push(idx);
+                }
                 Err(e) => {
                     warn!("error reading evdev events: {e}");
                 }
             }
         }
 
-        None
+        // Remove dead devices in reverse order to keep indices stable.
+        for idx in dead_indices.into_iter().rev() {
+            let dead = self.devices.swap_remove(idx);
+            warn!(
+                "evdev device gone, removed: {}",
+                dead.name().unwrap_or("?")
+            );
+        }
+
+        hot_event
     }
 }
